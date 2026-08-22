@@ -1,3 +1,12 @@
+"""Celery configuration and initialization.
+
+Reliability note: with `task_acks_late` the Redis broker redelivers a message whose
+task never acked, bounded by the transport's visibility timeout (1 hour by default).
+Two consequences: tasks must stay well under an hour so a slow task is not redelivered
+while still running, and every task must be idempotent, because redelivery — like
+S3/SNS at-least-once delivery — can run the same payload twice.
+"""
+
 import logging
 import ssl
 import sys
@@ -95,6 +104,12 @@ def create_celery() -> Celery:
             # replaced rather than handed to the next publish/consume.
             "health_check_interval": 30,
         },
+        # Ack the message when the task finishes, not when it is received: a worker
+        # killed mid-task (scale-in, deploy, OOM) would otherwise drop the work
+        # silently. Prefetch 1 keeps a stopping worker from holding a queue of
+        # messages it will never process.
+        task_acks_late=True,
+        worker_prefetch_multiplier=1,
         task_serializer="json",
         accept_content=["json"],
         result_serializer="json",
