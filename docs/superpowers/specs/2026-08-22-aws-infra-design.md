@@ -10,7 +10,7 @@
 
 Longevo consume hoy datos de wearables a través de Spike, con un volumen aproximado de **400.000 eventos por día**. El objetivo es reemplazarlo por este fork de Open Wearables, corriendo en infraestructura propia de AWS, gestionada con Terraform en el repositorio `longevoIac`.
 
-El principio rector es **desviarse lo mínimo posible del upstream**. Cada pieza de infraestructura que se reemplaza dentro del código es un delta a mantener en cada sincronización con Open Wearables. Este diseño adapta la topología del `docker-compose.yml` a servicios gestionados de AWS, y limita el cambio de código a tres piezas acotadas y con forma de upstream (sección 7).
+El principio rector es **desviarse lo mínimo posible del upstream**. Cada pieza de infraestructura que se reemplaza dentro del código es un delta a mantener en cada sincronización con Open Wearables. Este diseño adapta la topología del `docker-compose.yml` a servicios gestionados de AWS, y limita el cambio de código a cuatro piezas acotadas y con forma de upstream (sección 7).
 
 ## 2. Alcance de fase 1
 
@@ -160,11 +160,12 @@ El fork ya implementa el circuito completo de ingesta por S3 para el XML de Appl
 
 `POST /v1/users/{user_id}/import/apple/xml/s3` devuelve un presigned POST con condiciones de `content-length-range` y `Content-Type`, y clave `{user_id}/raw/{filename}`. El cliente sube directo a S3. El evento del bucket va a SNS; SNS hace POST a `/v1/sns/notification`; la app verifica la firma criptográfica de SNS y el ARN del topic, extrae el `user_id` del primer segmento de la clave y despacha `process_aws_upload.delay(bucket, key, user_id)`. La confirmación de suscripción se maneja sola.
 
-**Delta de código (tres piezas):**
+**Delta de código (cuatro piezas):**
 
-1. `POST /v1/sdk/users/{user_id}/sync/s3`: espejo del endpoint de XML, con `Content-Type: application/json` y clave `{user_id}/sdk/{batch_id}.json`. Debe tener tres segmentos, porque el parser de SNS exige al menos tres para extraer el `user_id`.
-2. Task `process_s3_sdk_upload(bucket, key, user_id)`: baja el objeto y delega en el mismo servicio de import que usa `process_sdk_upload`, que recibe el contenido como string.
-3. Despacho por prefijo en `sns_service`: `sdk/` a la task nueva, `raw/` al import de XML.
+1. `aws_service.get_s3_client()` y `get_sns_client()` pasan las credenciales de `settings` sin condicional: si no hay llaves estáticas, `settings.aws_secret_access_key.get_secret_value()` lanza `AttributeError`, la función la captura y devuelve `None`. Con sólo el rol de la task, el endpoint de presigned devolvería 503 y la task de procesamiento fallaría. Hay que construir los kwargs de `boto3.client` condicionalmente, tal como ya lo hace `raw_payload_storage._create_s3_client`. Sin este cambio es imposible operar sin credenciales estáticas de AWS.
+2. `POST /v1/sdk/users/{user_id}/sync/s3`: espejo del endpoint de XML, con `Content-Type: application/json` y clave `{user_id}/sdk/{batch_id}.json`. Debe tener tres segmentos, porque el parser de SNS exige al menos tres para extraer el `user_id`.
+3. Task `process_s3_sdk_upload(bucket_name, object_key, user_id)`: baja el objeto y delega en el mismo servicio de import que usa `process_sdk_upload`, que recibe el contenido como string.
+4. Despacho por prefijo en `sns_service`: `sdk/` a la task nueva, `raw/` al import de XML.
 
 Del lado móvil, el SDK elige camino por tamaño: bajo ~1 MB va JSON directo al endpoint actual y conserva el 400/403 sincrónico; por encima pide la URL prefirmada. El backfill histórico cae siempre del lado de S3.
 
@@ -180,7 +181,7 @@ Del lado móvil, el SDK elige camino por tamaño: bajo ~1 MB va JSON directo al 
 
 - Rol de task de la API: `s3:PutObject` sobre el bucket (para firmar) y `s3:ListBucket`, porque el servicio valida con `head_bucket` antes de firmar.
 - Rol de task del worker: `s3:GetObject`.
-- `get_s3_client` usa `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` **si están definidas** y si no cae a la cadena de credenciales por default. Por lo tanto esas variables **no se configuran**: boto3 toma el rol de la task. Sólo se definen `AWS_BUCKET_NAME`, `AWS_REGION` y `AWS_SNS_TOPIC_ARN`.
+- Una vez aplicada la pieza 1 del delta, `AWS_ACCESS_KEY_ID` y `AWS_SECRET_ACCESS_KEY` **no se configuran** y boto3 toma el rol de la task. Sólo se definen `AWS_BUCKET_NAME`, `AWS_REGION` y `AWS_SNS_TOPIC_ARN` como variables planas.
 
 **Idempotencia:** SNS entrega al menos una vez, así que la task puede ejecutarse dos veces con el mismo objeto. La idempotencia del upsert es un ítem de verificación bloqueante antes del primer lote de backfill (ítem V2).
 
@@ -265,7 +266,7 @@ Se reutilizan los módulos compartidos `src/modules/ecs/base`, `src/modules/s3` 
 
 1. `network` en qa (resuelto V3).
 2. `data` en qa: Aurora con sus tres usuarios y ElastiCache con el parameter group correcto (resuelto V1).
-3. Delta de código en el fork: extracción de `init.sh` y ajustes de configuración de Celery (`task_acks_late`, `prefetch`). Es independiente de la infra y se puede validar con `docker compose`.
+3. Delta de código en el fork: credenciales de boto3 por rol de task, extracción de `init.sh` y ajustes de configuración de Celery (`task_acks_late`, `prefetch`). Es independiente de la infra y se valida con la suite de tests y `docker compose`.
 4. `platform` en qa (cluster, ALB, WAF, ACM) más el pipeline de deploy del fork y el rol OIDC.
 5. `service` en qa: los cinco servicios, con la task de migración corriendo en el pipeline.
 6. `sdk-ingest` en qa: bucket, SNS, DLQ, y el delta de código de la sección 7. Validar V2 acá.
