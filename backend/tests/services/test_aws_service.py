@@ -1,10 +1,24 @@
 """Tests for the boto3 client factory used by the S3/SNS ingest path."""
 
+from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 
 from pydantic import SecretStr
+import pytest
 
 import app.services.apple.apple_xml.aws_service as aws_service
+
+
+@pytest.fixture(autouse=True)
+def mock_external_apis() -> Generator[dict[str, MagicMock], None, None]:
+    """No-op override of the global mock_external_apis fixture.
+
+    Unit tests in this module test the actual implementations,
+    not the mocked versions used in API integration tests.
+    This module-level fixture override applies only to this file,
+    preserving the global mock for other tests in the services directory.
+    """
+    yield {}
 
 
 @patch("app.services.apple.apple_xml.aws_service.boto3.client")
