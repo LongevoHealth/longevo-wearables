@@ -5,9 +5,12 @@ from logging import getLogger
 from fastapi import APIRouter, HTTPException, status
 
 from app.integrations.celery.tasks.process_sdk_upload_task import process_sdk_upload
+from app.schemas.providers.apple.apple_xml.aws import PresignedURLResponse
 from app.schemas.providers.mobile_sdk import SyncRequest
+from app.schemas.providers.sdk_upload import SdkPresignedURLRequest
 from app.schemas.responses.upload import UploadDataResponse
 from app.services.raw_payload_storage import store_raw_payload
+from app.services.sdk_upload_service import sdk_upload_service
 from app.utils.api_utils import inline_schema_defs
 from app.utils.auth import SDKAuthDep
 from app.utils.structured_logging import log_structured
@@ -124,3 +127,38 @@ def sync_sdk_data(
     )
 
     return UploadDataResponse(status_code=202, response="Import task queued successfully", user_id=user_id)
+
+
+@router.post("/sdk/users/{user_id}/sync/s3", status_code=status.HTTP_200_OK)
+def create_sdk_sync_upload_url(
+    user_id: str,
+    body: SdkPresignedURLRequest,
+    auth: SDKAuthDep,
+) -> PresignedURLResponse:
+    """Get a presigned S3 upload for a large SDK batch.
+
+    Batches below the SDK's size threshold keep posting JSON to
+    `/sdk/users/{user_id}/sync`, which validates the request synchronously. Larger
+    batches — historical backfill — upload here and are processed from the bucket
+    event, keeping multi-megabyte payloads out of the request body and the broker.
+
+    Args:
+        user_id: SDK user identifier
+        body: expiration and size limits for the upload
+        auth: SDK authentication (Bearer token or API key)
+
+    Returns:
+        PresignedURLResponse with the form to POST the batch to S3.
+
+    Raises:
+        HTTPException: 403 if the token does not match user_id, 503 if S3 is not configured.
+    """
+    if auth.auth_type == "sdk_token" and (not auth.user_id or str(auth.user_id) != user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Token does not match user_id",
+        )
+
+    batch_id = str(uuid.uuid4())
+
+    return sdk_upload_service.create_presigned_url(user_id, batch_id, body)
