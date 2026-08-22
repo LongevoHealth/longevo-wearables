@@ -10,7 +10,9 @@ from app.schemas.providers.apple.apple_xml.aws import (
 
 SDK_DEFAULT_EXPIRATION_SECONDS = 900  # 15 minutes
 SDK_DEFAULT_MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
-SDK_MAX_FILE_SIZE = 1024 * 1024 * 1024  # 1GiB
+# Maximum file size bounds what a single worker must hold in memory
+# (process_s3_sdk_upload reads entire object into memory via .read().decode())
+SDK_MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
 
 
 class SdkPresignedURLRequest(BaseModel):

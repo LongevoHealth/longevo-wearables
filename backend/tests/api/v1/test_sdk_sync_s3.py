@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 from starlette.testclient import TestClient
 
 from app.schemas.providers.apple.apple_xml.aws import PresignedURLResponse
@@ -93,3 +94,14 @@ def test_presigned_post_pins_json_content_type() -> None:
     assert kwargs["Key"] == "user-1/sdk/batch-9.json"
     assert kwargs["Fields"]["Content-Type"] == "application/json"
     assert ["content-length-range", 1, 200 * 1024 * 1024] in kwargs["Conditions"]
+
+
+def test_presigned_url_request_enforces_200mb_ceiling() -> None:
+    """Verify that max_file_size ceiling prevents workers from exhausting memory.
+
+    The ceiling bounds what a single worker must hold in memory, since
+    process_s3_sdk_upload reads the entire object via .read().decode().
+    Requests with max_file_size > 200 MB must raise ValidationError.
+    """
+    with pytest.raises(ValidationError):
+        SdkPresignedURLRequest(max_file_size=201 * 1024 * 1024)
