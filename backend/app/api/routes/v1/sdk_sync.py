@@ -131,7 +131,12 @@ def sync_sdk_data(
 
 @router.post("/sdk/users/{user_id}/sync/s3", status_code=status.HTTP_200_OK)
 def create_sdk_sync_upload_url(
-    user_id: str,
+    # Typed as UUID, unlike the sibling endpoint above, because this id is interpolated
+    # into the S3 object key. A value containing a slash would produce a key under
+    # another user's prefix, which the SNS handler then reads back as that user's batch.
+    # A malformed path id is rejected before it reaches the key (400, via the app's
+    # RequestValidationError handler).
+    user_id: uuid.UUID,
     body: SdkPresignedURLRequest,
     auth: SDKAuthDep,
 ) -> PresignedURLResponse:
@@ -151,9 +156,10 @@ def create_sdk_sync_upload_url(
         PresignedURLResponse with the form to POST the batch to S3.
 
     Raises:
-        HTTPException: 403 if the token does not match user_id, 503 if S3 is not configured.
+        HTTPException: 400 if user_id is not a UUID, 403 if the token does not match
+        user_id, 503 if S3 is not configured.
     """
-    if auth.auth_type == "sdk_token" and (not auth.user_id or str(auth.user_id) != user_id):
+    if auth.auth_type == "sdk_token" and (not auth.user_id or str(auth.user_id) != str(user_id)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Token does not match user_id",
@@ -161,4 +167,4 @@ def create_sdk_sync_upload_url(
 
     batch_id = str(uuid.uuid4())
 
-    return sdk_upload_service.create_presigned_url(user_id, batch_id, body)
+    return sdk_upload_service.create_presigned_url(str(user_id), batch_id, body)

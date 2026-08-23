@@ -65,6 +65,37 @@ def test_endpoint_rejects_a_token_issued_for_another_user(client: TestClient, ap
     assert response.status_code == 403
 
 
+def test_endpoint_rejects_a_user_id_that_is_not_a_uuid(client: TestClient, api_v1_prefix: str) -> None:
+    """The user id is interpolated into the S3 object key and `api_key` auth does not
+    pin it to the caller, so the key's shape depends on it being a plain id: an id
+    carrying extra path segments would land the object under another user's prefix,
+    which the SNS handler reads back as that user's batch. Reject anything that is not
+    a UUID before it reaches the key.
+
+    400, not 422: the app maps every RequestValidationError to 400 (see
+    app/utils/exceptions.py), which is what any other malformed path id returns here."""
+    token = create_sdk_user_token("app_123", USER_ID)
+
+    response = client.post(
+        f"{api_v1_prefix}/sdk/users/not-a-uuid/sync/s3",
+        headers={"Authorization": f"Bearer {token}"},
+        json={},
+    )
+
+    assert response.status_code == 400
+
+    # A slash-bearing id does not even reach the endpoint: the path param cannot match
+    # a segment separator, encoded or not. Pinned so the routing half of the guarantee
+    # is not lost silently either.
+    escaped = client.post(
+        f"{api_v1_prefix}/sdk/users/{USER_ID}%2Fsdk/sync/s3",
+        headers={"Authorization": f"Bearer {token}"},
+        json={},
+    )
+
+    assert escaped.status_code == 404
+
+
 def test_endpoint_requires_authentication(client: TestClient, api_v1_prefix: str) -> None:
     response = client.post(f"{api_v1_prefix}/sdk/users/{USER_ID}/sync/s3", json={})
 
