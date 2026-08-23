@@ -25,6 +25,16 @@ def test_broker_keepalive_options_are_preserved() -> None:
     assert options["health_check_interval"] == 30
 
 
+def test_sdk_upload_tasks_are_bounded_below_the_visibility_timeout() -> None:
+    """With `task_acks_late`, a task still running when the broker's visibility timeout
+    expires has its message redelivered to a second worker, which imports the same batch
+    concurrently. The SDK tasks must therefore cap themselves below that window."""
+    visibility_timeout = create_celery().conf.broker_transport_options["visibility_timeout"]
+
+    for task in (process_sdk_upload, process_s3_sdk_upload):
+        assert task.soft_time_limit < task.time_limit < visibility_timeout
+
+
 def test_sdk_upload_tasks_run_on_the_bulk_queue() -> None:
     """Both SDK import paths must land on `sdk_sync`, the queue the dedicated bulk
     worker serves (infra spec, sections 5 and 8). A task left on `default` would

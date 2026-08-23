@@ -21,7 +21,14 @@ logger = getLogger(__name__)
 SUPPORTED_PROVIDERS = ("apple", "samsung", "google")
 
 
-@shared_task(queue="sdk_sync")
+@shared_task(
+    queue="sdk_sync",
+    # Same bound as the delegate: the download plus the import must stay well inside the
+    # broker's 3600s visibility timeout, or `task_acks_late` starts a second worker on
+    # the same object. See process_sdk_upload_task for the reasoning.
+    soft_time_limit=1800,  # 30 min soft limit — raises SoftTimeLimitExceeded
+    time_limit=1860,  # 31 min hard limit
+)
 def process_s3_sdk_upload(bucket_name: str, object_key: str, user_id: str) -> dict[str, Any]:
     """Download an SDK batch from S3 and import it.
 
