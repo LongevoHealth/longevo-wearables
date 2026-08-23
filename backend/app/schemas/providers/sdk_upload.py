@@ -26,5 +26,5 @@ class SdkPresignedURLRequest(BaseModel):
         default=SDK_DEFAULT_MAX_FILE_SIZE,
         ge=MIN_FILE_SIZE,
         le=SDK_MAX_FILE_SIZE,
-        description="Maximum upload size in bytes (1KB - 1GiB)",
+        description="Maximum upload size in bytes (1KB - 200MB)",
     )
