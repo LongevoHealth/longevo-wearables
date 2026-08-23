@@ -81,6 +81,24 @@ def test_service_returns_503_when_s3_is_not_configured() -> None:
     assert exc_info.value.status_code == 503
 
 
+def test_service_returns_503_when_bucket_is_not_configured() -> None:
+    """A configured client with no bucket name is just as unusable as no client —
+    presigning against `None` would blow up downstream, so this must 503 too."""
+    s3_client = MagicMock()
+
+    with patch("app.services.sdk_upload_service.get_s3_client", return_value=s3_client):
+        service = SdkUploadService(getLogger("test"))
+
+    with (
+        patch("app.services.sdk_upload_service.AWS_BUCKET_NAME", None),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        service.create_presigned_url("user-1", "batch-9", SdkPresignedURLRequest())
+
+    assert exc_info.value.status_code == 503
+    s3_client.generate_presigned_post.assert_not_called()
+
+
 def test_presigned_post_pins_json_content_type() -> None:
     s3_client = MagicMock()
     s3_client.generate_presigned_post.return_value = {"url": "https://s3", "fields": {"key": "k"}}

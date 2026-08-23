@@ -4,6 +4,8 @@ import io
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.integrations.celery.tasks.process_s3_sdk_upload_task import process_s3_sdk_upload
 
 MODULE = "app.integrations.celery.tasks.process_s3_sdk_upload_task"
@@ -80,15 +82,10 @@ def test_malformed_json_is_not_dispatched(
     mock_process.assert_not_called()
 
 
-@patch(f"{MODULE}.get_s3_client", return_value=None)
-def test_raises_when_s3_is_not_configured(_mock_get_client: MagicMock) -> None:
-    try:
+def test_raises_when_s3_is_not_configured() -> None:
+    with patch(f"{MODULE}.get_s3_client", return_value=None), pytest.raises(RuntimeError):
         process_s3_sdk_upload(
             bucket_name="ingest-bucket",
             object_key="user-1/sdk/batch-9.json",
             user_id="user-1",
         )
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("expected RuntimeError when the S3 client is unavailable")

@@ -33,7 +33,8 @@ class SdkUploadService:
         batch_id: str,
         request: SdkPresignedURLRequest,
     ) -> PresignedURLResponse:
-        if not self.s3_client:
+        bucket_name = AWS_BUCKET_NAME
+        if not self.s3_client or not bucket_name:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="S3 client not configured",
@@ -43,7 +44,7 @@ class SdkUploadService:
 
         try:
             presigned_post = self.s3_client.generate_presigned_post(
-                Bucket=AWS_BUCKET_NAME,
+                Bucket=bucket_name,
                 Key=file_key,
                 Fields={"Content-Type": "application/json"},
                 Conditions=[
@@ -65,7 +66,7 @@ class SdkUploadService:
             file_key=file_key,
             expires_in=request.expiration_seconds,
             max_file_size=request.max_file_size,
-            bucket=AWS_BUCKET_NAME,
+            bucket=bucket_name,
         )
 
 
