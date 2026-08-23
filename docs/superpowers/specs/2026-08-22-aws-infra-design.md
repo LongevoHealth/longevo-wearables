@@ -56,7 +56,21 @@ Una VPC propia por ambiente, sin peering ni rutas hacia las VPCs de Longevo. El 
 | Aislada | `/24` | Aurora y ElastiCache, sin ruta de salida |
 
 - `qa`: `10.60.0.0/16`, 2 AZs. `prod`: `10.61.0.0/16`, 3 AZs.
-- Los CIDRs deben confirmarse contra las VPCs existentes de Longevo para no solaparse. Es gratis hoy e imposible después (ítem V3).
+
+**V3 resuelto.** Los tres ambientes de Longevo viven en la misma cuenta (`577082859150`), y el inventario de CIDRs en uso es:
+
+| Ambiente | Región | VPC | CIDR | Pool de clientes VPN |
+|---|---|---|---|---|
+| prod | us-east-1 | `vpc-7a33ad07` — **default** | `172.31.0.0/16` | `10.200.0.0/22` |
+| qa | us-west-2 | `vpc-0dc8f675` — **default** | `172.31.0.0/16` | `10.100.0.0/22` |
+| staging | us-east-2 | `longevo-staging-vpc` | `10.10.0.0/16` | `10.150.0.0/22` |
+
+`10.60.0.0/16` y `10.61.0.0/16` no colisionan con ninguno de esos rangos, así que quedan confirmados. Dos observaciones que salen del inventario y que conviene tener a la vista:
+
+- **prod y qa corren en la VPC default**, las dos con el mismo `172.31.0.0/16`. Entre sí nunca van a poder peerearse, y cualquier peering futuro contra ellas hereda esa ambigüedad. Un argumento más para que wearables tenga su propia VPC con un rango elegido.
+- **El Client VPN existente está asociado a la VPC default de cada región.** Si el equipo va a necesitar acceso privado a Aurora o a las tasks de wearables, no alcanza con estar conectado a la VPN actual: hay que crear un endpoint propio en la VPC de wearables, o peerear y agregar reglas de autorización. Está presupuestado como acceso por SSM Session Manager, que evita las dos cosas.
+
+**Lo que el inventario abre y este diseño no resuelve: el aislamiento es de red, no de cuenta.** La VPC de wearables queda independiente, pero comparte cuenta con todo el resto de Longevo, así que comparte el plano de IAM, los límites de servicio, CloudTrail y el radio de explosión de una credencial comprometida. Para HIPAA e ISO 27001 una cuenta separada es un límite materialmente más fuerte que una VPC separada, y era el espíritu del pedido original. No lo decido acá porque implica Organizations, facturación y el pipeline de OIDC; queda como decisión explícita (ítem V9).
 
 **VPC endpoints** (sin NAT): interface para `ecr.api`, `ecr.dkr`, `logs`, `secretsmanager`, `ssmmessages`; gateway para S3. Los endpoints de interface se pagan por AZ, así que van en las 3 AZs de `prod` y en una sola AZ en `qa`.
 
@@ -297,7 +311,7 @@ Bloqueantes antes de la implementación de la parte correspondiente:
 |---|---|---|
 | V1 | ~~¿ElastiCache ofrece Redis 8?~~ **Resuelto:** no. Redis OSS corta en 7.1, Valkey llega a 9.1. Se va a Valkey (ver sección 6) | — |
 | V2 | Idempotencia ante entrega duplicada. **Parcialmente resuelto:** series y workouts sí, sleep no confirmado (ver sección 7). Falta una prueba de reprocesamiento real sobre datos de sueño | Primer lote de backfill |
-| V3 | ¿Qué CIDRs usan hoy las VPCs de Longevo? | Módulo `network` |
+| V3 | ~~¿Qué CIDRs usan hoy las VPCs de Longevo?~~ **Resuelto:** `172.31.0.0/16` en prod y qa (VPCs default), `10.10.0.0/16` en staging, más los pools VPN `10.100/10.150/10.200.0.0/22`. `10.60`/`10.61` confirmados (ver sección 4) | — |
 
 No bloqueantes, pero necesarios para cerrar el sizing:
 
@@ -308,6 +322,7 @@ No bloqueantes, pero necesarios para cerrar el sizing:
 | V6 | Cantidad de usuarios a migrar y ventana disponible, para calibrar las cohortes |
 | V7 | Costo actual de Spike |
 | V8 | Dominio y subdominios para `api.*` y `app.*`, y quién administra Route 53 y ACM |
+| V9 | ¿Cuenta AWS separada para wearables, o VPC separada dentro de la cuenta actual? El aislamiento de red ya está; el de cuenta no. Decisión de compliance con impacto en Organizations, facturación y OIDC |
 
 ## 13. Mapeo de controles HIPAA / ISO 27001
 
