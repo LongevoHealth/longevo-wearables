@@ -176,6 +176,7 @@ Del lado móvil, el SDK elige camino por tamaño: bajo ~1 MB va JSON directo al 
 - Suscripción HTTPS al endpoint de la API creada desde Terraform con `endpoint_auto_confirms`, ya que la app confirma sola.
 - **DLQ (SQS) en la suscripción SNS.** Si el POST al endpoint falla de forma persistente, SNS reintenta y descarta. La redrive policy captura esas entregas. Es el único punto del flujo donde algo se perdería en silencio.
 - URLs prefirmadas con vencimiento de 15 minutos y tope de tamaño en las condiciones del POST, para que el bucket no se convierta en storage gratuito.
+- **El techo de tamaño es de 200 MB y lo impone el servidor**, no el cliente. El request puede pedir menos, nunca más. La razón no es S3 sino el worker: la task lee el objeto completo en memoria y el payload se parsea dos veces, así que un objeto mayor que la memoria del worker puede provocar un OOM — y como un OOM es exactamente el caso de "worker muerto a mitad de la task", `task_acks_late` redelivera el mismo payload y el batch envenena la cola en loop.
 
 **Permisos y credenciales:**
 
@@ -183,7 +184,15 @@ Del lado móvil, el SDK elige camino por tamaño: bajo ~1 MB va JSON directo al 
 - Rol de task del worker: `s3:GetObject`.
 - Una vez aplicada la pieza 1 del delta, `AWS_ACCESS_KEY_ID` y `AWS_SECRET_ACCESS_KEY` **no se configuran** y boto3 toma el rol de la task. Sólo se definen `AWS_BUCKET_NAME`, `AWS_REGION` y `AWS_SNS_TOPIC_ARN` como variables planas.
 
-**Idempotencia:** SNS entrega al menos una vez, así que la task puede ejecutarse dos veces con el mismo objeto. La idempotencia del upsert es un ítem de verificación bloqueante antes del primer lote de backfill (ítem V2).
+**Idempotencia — parcialmente resuelto durante la implementación.** SNS entrega al menos una vez y el redelivery del broker suma un segundo camino, así que la misma task puede correr dos veces con el mismo objeto. Se trazó el código de import y el resultado es **mixto**:
+
+| Tipo de dato | Idempotente | Mecanismo |
+|---|---|---|
+| Series temporales | Sí | `INSERT ... ON CONFLICT (data_source_id, series_type_definition_id, recorded_at) DO UPDATE`, con unique constraint `uq_data_point_series_source_type_time` |
+| Workouts | Sí | `ON CONFLICT (data_source_id, start_datetime, end_datetime) DO NOTHING`, con índice único `ix_event_record_source_time`; los detalles se filtran a los ids realmente insertados |
+| Sleep | **No confirmado** | No hay upsert a nivel de base: `handle_sleep_data` mantiene una sesión en Redis y `finish_sleep` busca el registro adyacente, lo borra y reconstruye uno fusionado. Hay una red de seguridad que colapsa intervalos duplicados exactos, pero no cubre payloads agregados sin intervalos de etapa ni las carreras de lock y TTL de Redis |
+
+Consecuencia práctica: el reprocesamiento es seguro para series y workouts, y **riesgoso para sleep** — que es justo el insumo de los health scores. Antes de abrir el primer lote de backfill hay que cerrar esto con una prueba de reprocesamiento real sobre datos de sueño, no con lectura de código.
 
 ## 8. Migración desde Spike
 
@@ -281,7 +290,7 @@ Bloqueantes antes de la implementación de la parte correspondiente:
 | # | Ítem | Bloquea |
 |---|---|---|
 | V1 | ¿ElastiCache ofrece Redis 8, o vamos a Valkey 8? | Módulo `data` |
-| V2 | ¿El upsert de datos es idempotente ante entrega duplicada de SNS? | Primer lote de backfill |
+| V2 | Idempotencia ante entrega duplicada. **Parcialmente resuelto:** series y workouts sí, sleep no confirmado (ver sección 7). Falta una prueba de reprocesamiento real sobre datos de sueño | Primer lote de backfill |
 | V3 | ¿Qué CIDRs usan hoy las VPCs de Longevo? | Módulo `network` |
 
 No bloqueantes, pero necesarios para cerrar el sizing:
