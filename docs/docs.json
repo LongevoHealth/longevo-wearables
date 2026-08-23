@@ -116,7 +116,8 @@
               "dev-guides/integration-guide",
               "dev-guides/how-to-add-new-provider",
               "dev-guides/ngrok-setup",
-              "dev-guides/seed-data-generator"
+              "dev-guides/seed-data-generator",
+              "dev-guides/sdk-bulk-upload"
             ]
           },
           {
