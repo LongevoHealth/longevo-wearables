@@ -18,7 +18,7 @@ The mobile SDK has two ways to deliver a batch:
 | Path | Use it for | Feedback |
 |---|---|---|
 | `POST /api/v1/sdk/users/{user_id}/sync` | Incremental syncs under ~1 MB | Synchronous `400`/`403` on a bad request, `202` once queued |
-| `POST /api/v1/sdk/users/{user_id}/sync/s3` | Historical backfill and any batch above the threshold | Synchronous `403`/`422` on a bad request, `200` with the upload form; the batch itself is validated asynchronously, after the upload |
+| `POST /api/v1/sdk/users/{user_id}/sync/s3` | Historical backfill and any batch above the threshold | Synchronous `400`/`403` on a bad request, `200` with the upload form; the batch itself is validated asynchronously, after the upload |
 
 Large batches take the S3 path so a multi-megabyte payload never travels through the
 request body or the task broker.
@@ -38,9 +38,12 @@ request body or the task broker.
 
 The presigned form expires in 15 minutes (900 seconds) by default; you can request
 anywhere from 60 to 3600 seconds via `expiration_seconds`. The upload is capped at
-200 MB — that ceiling is enforced server-side and cannot be raised. `max_file_size`
-only lets you ask for a *smaller* cap (down to 1 KB); a request for more than 200 MB
-is rejected with a `422` before any presigned form is issued.
+50 MB — that ceiling is enforced server-side and cannot be raised. `max_file_size`
+defaults to the full 50 MB and only lets you ask for a *smaller* cap (down to 1 KB);
+a request for more than 50 MB is rejected with a `400` before any presigned form is
+issued. The cap is set by what the worker must hold in memory to import the batch,
+not by S3: split a backfill larger than 50 MB into several batches, each with its own
+presigned form.
 
 ## Object key layout
 
@@ -52,9 +55,16 @@ your own `batch_id`.
 
 ## Retries
 
-SNS delivers at least once, and a worker killed mid-task can also cause the same
-batch to be redelivered — so a batch genuinely can be processed twice. Whether a
-retry is safe depends on what the batch contains:
+**Retry a failed upload.** If an upload or its confirmation fails, re-request a
+presigned form and send the batch again. Withholding a retry is the one choice that
+reliably loses data.
+
+Duplicate processing is real, but it does not originate in the SDK: the bucket
+notification is delivered at least once, and a worker killed mid-task has its message
+redelivered by the broker, so the server can process the same object twice even when
+the SDK uploaded it exactly once. That means holding back a retry buys nothing — it
+cannot prevent the duplication, it can only lose the batch. Here is what the import
+does about it:
 
 - **Time-series samples are safe to retry.** This covers both the top-level
   `records` array and the per-metric statistics extracted from each `workouts`
@@ -66,15 +76,21 @@ retry is safe depends on what the batch contains:
   conflict, and its detail row (calories, distance, heart-rate stats, …) is only
   ever written the first time that header is actually inserted — so a duplicate
   workout is silently skipped rather than duplicated.
-- **Sleep is not confirmed safe to retry.** Sleep sessions aren't a single
-  idempotent database write: they're assembled from a Redis-backed state machine
-  that accumulates stage transitions and then merges the finished session with any
-  adjacent session already stored for that user. Whether re-running the same batch
-  reproduces the same session or extends/duplicates it depends on timing (whether
-  the prior run's Redis state had already finalized and cleared) and on whether the
-  payload carries per-stage boundaries. This has not been verified safe.
+- **Sleep is safe to re-send once the first import has finished.** Sleep sessions
+  aren't a single idempotent database write: they're assembled from a Redis-backed
+  state machine that accumulates stage transitions and then merges the finished
+  session with any adjacent session already stored for that user. Re-importing
+  identical stage intervals collapses them back onto the same session instead of
+  extending it, so a sequential replay of the same batch lands where it started.
+  Sending per-stage boundaries rather than one aggregate sleep block is what puts a
+  batch on that path, so prefer stage intervals when the platform exposes them.
+- **The remaining sleep case is *concurrent* reprocessing, and it is a server-side
+  concern.** If two imports of the same user's sleep overlap in time, they can race
+  the session state and the adjacent-session merge. That window is opened by
+  at-least-once bucket notification and broker redelivery — both server-side, neither
+  visible to the SDK, and nothing the SDK sends or withholds changes it. It is being
+  closed on the server before the first migration cohort.
 
-Until sleep retries are verified, do not re-upload a batch that contains sleep data
-and that may have already reached the server successfully. If a `/sync/s3` upload
-or its bucket-event delivery times out and you can't confirm whether it landed,
-treat it as ambiguous rather than assuming it's safe to resend.
+So: retry uploads normally, including batches that contain sleep. If an upload or its
+bucket-event delivery times out and you can't confirm whether it landed, resend it —
+an extra copy is handled by the rules above, a missing copy is not recoverable.
