@@ -12,9 +12,11 @@ from fastapi import status
 
 from app.config import settings
 from app.integrations.celery.tasks.process_aws_upload_task import process_aws_upload
+from app.integrations.celery.tasks.process_s3_sdk_upload_task import process_s3_sdk_upload
 from app.schemas.providers.apple.apple_xml import SNSNotification
 from app.schemas.responses.upload import UploadDataResponse
 from app.services.apple.apple_xml.aws_service import get_sns_client
+from app.services.sdk_upload_service import SDK_KEY_PREFIX
 from app.utils.structured_logging import log_structured
 
 logger = getLogger(__name__)
@@ -170,11 +172,20 @@ class SNSService:
                 )
                 continue
 
-            process_aws_upload.delay(
-                bucket_name=bucket_name,
-                object_key=object_key,
-                user_id=user_id,
-            )
+            # One bucket, two kinds of object: `{user}/sdk/*.json` are mobile-SDK
+            # batches, `{user}/raw/*.xml` are Apple Health exports.
+            if object_key_parts[1] == SDK_KEY_PREFIX:
+                process_s3_sdk_upload.delay(
+                    bucket_name=bucket_name,
+                    object_key=object_key,
+                    user_id=user_id,
+                )
+            else:
+                process_aws_upload.delay(
+                    bucket_name=bucket_name,
+                    object_key=object_key,
+                    user_id=user_id,
+                )
             dispatched += 1
 
             log_structured(
