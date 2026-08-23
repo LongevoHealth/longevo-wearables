@@ -21,7 +21,7 @@ logger = getLogger(__name__)
 SUPPORTED_PROVIDERS = ("apple", "samsung", "google")
 
 
-@shared_task
+@shared_task(queue="sdk_sync")
 def process_s3_sdk_upload(bucket_name: str, object_key: str, user_id: str) -> dict[str, Any]:
     """Download an SDK batch from S3 and import it.
 

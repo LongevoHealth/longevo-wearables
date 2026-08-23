@@ -5,6 +5,8 @@ ack once the task finished. See the infra spec, section 6.
 """
 
 from app.integrations.celery.core import create_celery
+from app.integrations.celery.tasks.process_s3_sdk_upload_task import process_s3_sdk_upload
+from app.integrations.celery.tasks.process_sdk_upload_task import process_sdk_upload
 
 
 def test_tasks_are_acknowledged_after_completion() -> None:
@@ -21,3 +23,13 @@ def test_broker_keepalive_options_are_preserved() -> None:
 
     assert options["socket_keepalive"] is True
     assert options["health_check_interval"] == 30
+
+
+def test_sdk_upload_tasks_run_on_the_bulk_queue() -> None:
+    """Both SDK import paths must land on `sdk_sync`, the queue the dedicated bulk
+    worker serves (infra spec, sections 5 and 8). A task left on `default` would
+    compete with interactive syncs on the general worker."""
+    celery_app = create_celery()
+
+    for task in (process_sdk_upload, process_s3_sdk_upload):
+        assert celery_app.tasks[task.name].queue == "sdk_sync"
