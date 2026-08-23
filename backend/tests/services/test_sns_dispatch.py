@@ -75,6 +75,25 @@ def test_raw_prefix_still_goes_to_the_xml_task(
 
 @patch(f"{MODULE}.process_s3_sdk_upload")
 @patch(f"{MODULE}.process_aws_upload")
+def test_unknown_prefix_dispatches_nothing(
+    mock_xml_task: MagicMock,
+    mock_sdk_task: MagicMock,
+) -> None:
+    """Only `sdk/` and `raw/` are uploads. Other objects in a notification-enabled
+    bucket — raw payload storage writes `raw-payloads/{provider}/{source}/...` when it
+    shares the ingest bucket — must be skipped, not guessed into the XML importer with
+    a user id taken from the first path segment."""
+    result = sns_service._process_s3_notification(
+        _notification_for("raw-payloads/apple/sdk/2026-08-22/user-1/batch-9.json")
+    )
+
+    mock_xml_task.delay.assert_not_called()
+    mock_sdk_task.delay.assert_not_called()
+    assert "0 tasks dispatched" in result.response
+
+
+@patch(f"{MODULE}.process_s3_sdk_upload")
+@patch(f"{MODULE}.process_aws_upload")
 def test_key_without_enough_segments_dispatches_nothing(
     mock_xml_task: MagicMock,
     mock_sdk_task: MagicMock,

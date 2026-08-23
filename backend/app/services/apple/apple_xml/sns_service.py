@@ -21,6 +21,10 @@ from app.utils.structured_logging import log_structured
 
 logger = getLogger(__name__)
 
+# Middle segment of the keys the XML presigned-upload endpoint hands out
+# (see presigned_url_service: `{user_id}/raw/{filename}`).
+XML_KEY_PREFIX = "raw"
+
 _SNS_CERT_URL_RE = re.compile(r"^https://sns\.[a-z0-9-]+\.amazonaws\.com/SimpleNotificationService-[a-f0-9]+\.pem$")
 
 _NOTIFICATION_FIELDS = ("Message", "MessageId", "Subject", "Timestamp", "TopicArn", "Type")
@@ -173,19 +177,33 @@ class SNSService:
                 continue
 
             # One bucket, two kinds of object: `{user}/sdk/*.json` are mobile-SDK
-            # batches, `{user}/raw/*.xml` are Apple Health exports.
-            if object_key_parts[1] == SDK_KEY_PREFIX:
+            # batches, `{user}/raw/*.xml` are Apple Health exports. Anything else is
+            # not an upload at all — a notification-enabled bucket can hold objects
+            # written by other features (e.g. raw payload storage, keyed
+            # `{prefix}/{provider}/...`) — and guessing would run them through an
+            # importer under a user id invented from the first path segment.
+            key_prefix = object_key_parts[1]
+            if key_prefix == SDK_KEY_PREFIX:
                 process_s3_sdk_upload.delay(
                     bucket_name=bucket_name,
                     object_key=object_key,
                     user_id=user_id,
                 )
-            else:
+            elif key_prefix == XML_KEY_PREFIX:
                 process_aws_upload.delay(
                     bucket_name=bucket_name,
                     object_key=object_key,
                     user_id=user_id,
                 )
+            else:
+                log_structured(
+                    logger,
+                    "warning",
+                    f"Unrecognized object key prefix {key_prefix!r}, skipping: {object_key}",
+                    provider="apple_xml",
+                    task="sns_notification",
+                )
+                continue
             dispatched += 1
 
             log_structured(
