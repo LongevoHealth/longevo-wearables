@@ -147,7 +147,11 @@ Recomendación: si el producto consume summaries y scores, arrancar en `hourly` 
 
 ### ElastiCache
 
-Replication group con primary + réplica, Multi-AZ con failover automático, cifrado at-rest e in-transit, AUTH token en Secrets Manager. Motor: verificar disponibilidad de Redis 8; si no está, Valkey 8 es wire-compatible con lo que usa Celery y más económico (ítem V1).
+Replication group con primary + réplica, Multi-AZ con failover automático, cifrado at-rest e in-transit, AUTH token en Secrets Manager.
+
+**Motor: Valkey. V1 resuelto** — ElastiCache no ofrece Redis OSS 8. Las versiones soportadas de Redis OSS cortan en **7.1**; Valkey llega a **9.1** (docs de ElastiCache, *Engine versions and upgrading*). El `redis:8` del compose no tiene equivalente, así que la elección real es Valkey 9.x o quedarse en Redis OSS 7.1. Valkey es wire-compatible con lo que usan Celery y redis-py.
+
+Y hay un motivo de diseño, no sólo de versión, para ir a Valkey 9.x: **introduce durability por log transaccional Multi-AZ**, con escritura síncrona (cero pérdida) o asíncrona (hasta 10 s en riesgo). Un broker de Celery durable cambia la ecuación que motivaba discutir SQS: el argumento de "una cola gestionada con durabilidad real" se cubre sin migrar el sistema de tareas ni divergir del upstream. Queda por verificar en la implementación que la durability sea transparente al protocolo que usa Celery, y cuánto cuesta frente a un replication group sin ella — pero si lo es, refuerza D1 y D2 en lugar de debilitarlos.
 
 Dos hallazgos del código que determinan la configuración:
 
@@ -291,7 +295,7 @@ Bloqueantes antes de la implementación de la parte correspondiente:
 
 | # | Ítem | Bloquea |
 |---|---|---|
-| V1 | ¿ElastiCache ofrece Redis 8, o vamos a Valkey 8? | Módulo `data` |
+| V1 | ~~¿ElastiCache ofrece Redis 8?~~ **Resuelto:** no. Redis OSS corta en 7.1, Valkey llega a 9.1. Se va a Valkey (ver sección 6) | — |
 | V2 | Idempotencia ante entrega duplicada. **Parcialmente resuelto:** series y workouts sí, sleep no confirmado (ver sección 7). Falta una prueba de reprocesamiento real sobre datos de sueño | Primer lote de backfill |
 | V3 | ¿Qué CIDRs usan hoy las VPCs de Longevo? | Módulo `network` |
 
