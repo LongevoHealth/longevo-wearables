@@ -94,6 +94,7 @@ Un cluster Fargate por ambiente. Cinco servicios, dos imágenes: API, worker, wo
 
 - El worker de backfill descarga el archivo a `/tmp` y lo parsea en memoria (`backend/app/integrations/celery/tasks/process_aws_upload_task.py`): necesita ephemeral storage por encima de los 20 GB por defecto durante la ventana de migración.
 - El worker es IO-bound (`--pool=threads`), así que la CPU es una señal de escalado mediocre. Fase 1 escala por CPU; la profundidad de cola como métrica de escalado queda para fase 2.
+- **El worker de backfill se define por override de command en la task definition, y ahí van dos cosas que no pueden faltar:** `--concurrency=1`, porque el default es `os.cpu_count()` y en Fargate eso puede reportar los cores del host y no las vCPU de la task — dos batches concurrentes contra el techo de memoria es precisamente el escenario de OOM; y `--pool=prefork` si se quiere que los límites de tiempo por task se apliquen, porque **el thread pool de Celery descarta `soft_time_limit` y `task_time_limit`**. Con `--pool=threads` esos límites quedan declarados pero inertes.
 - `task_acks_late=True` y `worker_prefetch_multiplier=1` en la configuración de Celery, más `stopTimeout=120` en el contenedor, para que un scale-in o un deploy no pierda la task en curso (ver sección 6).
 - `celery-beat` se despliega con `deployment_minimum_healthy_percent=0` y `maximum_percent=100`, para que nunca haya dos schedulers vivos simultáneamente.
 
@@ -176,7 +177,7 @@ Del lado móvil, el SDK elige camino por tamaño: bajo ~1 MB va JSON directo al 
 - Suscripción HTTPS al endpoint de la API creada desde Terraform con `endpoint_auto_confirms`, ya que la app confirma sola.
 - **DLQ (SQS) en la suscripción SNS.** Si el POST al endpoint falla de forma persistente, SNS reintenta y descarta. La redrive policy captura esas entregas. Es el único punto del flujo donde algo se perdería en silencio.
 - URLs prefirmadas con vencimiento de 15 minutos y tope de tamaño en las condiciones del POST, para que el bucket no se convierta en storage gratuito.
-- **El techo de tamaño es de 200 MB y lo impone el servidor**, no el cliente. El request puede pedir menos, nunca más. La razón no es S3 sino el worker: la task lee el objeto completo en memoria y el payload se parsea dos veces, así que un objeto mayor que la memoria del worker puede provocar un OOM — y como un OOM es exactamente el caso de "worker muerto a mitad de la task", `task_acks_late` redelivera el mismo payload y el batch envenena la cola en loop.
+- **El techo de tamaño es de 50 MB y lo impone el servidor**, no el cliente. El request puede pedir menos, nunca más. La razón no es S3 sino la memoria del worker, y el número sale de una medición, no de una estimación: un batch de 200 MB pica en ~2,0 GB residentes, porque el payload existe simultáneamente como bytes, como string decodificado, como dos árboles JSON parseados y como objetos pydantic validados. El multiplicador es ~10×, así que **la memoria del worker tiene que ser al menos diez veces el techo**. Importa porque un OOM es exactamente el caso de "worker muerto a mitad de la task": con `task_acks_late` el mismo payload se redelivera, vuelve a matar al worker y envenena la cola en loop.
 
 **Permisos y credenciales:**
 
@@ -203,7 +204,8 @@ Este es el evento dimensionante del sistema, no el régimen permanente:
 - **Control de ritmo por cohortes desde la app móvil**, no desde la infraestructura. Se habilita la re-vinculación por lotes, se mide el primero y se calibra el resto. Con este control no hace falta una cola de amortiguación.
 - Los backfills viajan por S3 (sección 7) y se procesan en la cola `sdk_sync`, atendida por `celery-worker-bulk` con autoscaling propio.
 - Techo de ACU de Aurora elevado a 32 durante la ventana, y devuelto a 16 después.
-- La idempotencia del upsert debe estar verificada antes de abrir el primer lote.
+- **Gate obligatorio antes del primer lote:** un guard de objeto ya procesado — clave `(user_id, object_key)` en Redis con `SET NX`, o una fila única equivalente — que haga del redelivery un no-op. Es lo único que cubre sleep, cuyo camino de escritura no es un upsert (sección 7). Deliberadamente **no** se implementó en la rama del delta de código: es un mecanismo nuevo que el plan no contemplaba, diverge del upstream, y un guard persistente saltearía en silencio los replays deliberados de los que depende el tooling de replay del propio fork. Se construye acá, con la decisión tomada a la vista.
+- La exposición real de sleep no es el replay sino la concurrencia: el lock de Redis usa `timeout=30` y `blocking_timeout=15`, ambos superables con batches grandes, y una segunda task para el mismo usuario que no consigue el lock **descarta la porción de sueño y hace ack igual**. Pérdida silenciosa, no duplicación. `--concurrency=1` en el worker de backfill lo resuelve por construcción.
 
 ## 9. Observabilidad
 
