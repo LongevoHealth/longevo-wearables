@@ -9,10 +9,14 @@ from app.schemas.providers.apple.apple_xml.aws import (
 )
 
 SDK_DEFAULT_EXPIRATION_SECONDS = 900  # 15 minutes
-SDK_DEFAULT_MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
-# Maximum file size bounds what a single worker must hold in memory
-# (process_s3_sdk_upload reads entire object into memory via .read().decode())
-SDK_MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
+SDK_DEFAULT_MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+# The ceiling bounds worker memory at roughly *ten times* the object size, not one
+# times: process_s3_sdk_upload reads the whole object with .read().decode(), and the
+# import path then holds the payload as bytes, as a decoded str, as two parsed JSON
+# trees and as validated pydantic models at once. A measured 200MB batch peaked at
+# ~2.0GB resident, well past the 4GB the bulk worker task is sized for once two
+# batches overlap. 50MB keeps the worst case near 500MB per batch.
+SDK_MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
 
 class SdkPresignedURLRequest(BaseModel):
@@ -26,5 +30,5 @@ class SdkPresignedURLRequest(BaseModel):
         default=SDK_DEFAULT_MAX_FILE_SIZE,
         ge=MIN_FILE_SIZE,
         le=SDK_MAX_FILE_SIZE,
-        description="Maximum upload size in bytes (1KB - 200MB)",
+        description="Maximum upload size in bytes (1KB - 50MB)",
     )

@@ -35,7 +35,7 @@ def test_endpoint_returns_the_upload_form(client: TestClient, api_v1_prefix: str
         form_fields={"key": f"{USER_ID}/sdk/batch-9.json"},
         file_key=f"{USER_ID}/sdk/batch-9.json",
         expires_in=900,
-        max_file_size=200 * 1024 * 1024,
+        max_file_size=50 * 1024 * 1024,
         bucket="test-bucket",
     )
 
@@ -111,15 +111,17 @@ def test_presigned_post_pins_json_content_type() -> None:
     kwargs = s3_client.generate_presigned_post.call_args.kwargs
     assert kwargs["Key"] == "user-1/sdk/batch-9.json"
     assert kwargs["Fields"]["Content-Type"] == "application/json"
-    assert ["content-length-range", 1, 200 * 1024 * 1024] in kwargs["Conditions"]
+    assert ["content-length-range", 1, 50 * 1024 * 1024] in kwargs["Conditions"]
 
 
-def test_presigned_url_request_enforces_200mb_ceiling() -> None:
+def test_presigned_url_request_enforces_50mb_ceiling() -> None:
     """Verify that max_file_size ceiling prevents workers from exhausting memory.
 
-    The ceiling bounds what a single worker must hold in memory, since
-    process_s3_sdk_upload reads the entire object via .read().decode().
-    Requests with max_file_size > 200 MB must raise ValidationError.
+    The object is held several times over while it is imported — bytes, decoded str,
+    parsed JSON trees, validated models — so peak worker memory runs about ten times
+    the object size. Requests with max_file_size > 50 MB must raise ValidationError.
     """
     with pytest.raises(ValidationError):
-        SdkPresignedURLRequest(max_file_size=201 * 1024 * 1024)
+        SdkPresignedURLRequest(max_file_size=51 * 1024 * 1024)
+
+    assert SdkPresignedURLRequest(max_file_size=50 * 1024 * 1024).max_file_size == 50 * 1024 * 1024
