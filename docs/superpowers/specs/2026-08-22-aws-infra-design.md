@@ -273,12 +273,14 @@ Aurora es la línea dominante y la más variable: depende directamente de la dec
 
 ## 11. Layout en longevoIac
 
-Proyecto nuevo `src/longevo/open-wearables`, independiente del `src/longevo/wearables` existente (que conserva su DocumentDB y su ingesta de wearable propietario). Slug de CI: `longevo-open-wearables`. GitHub environments: `qa-longevo-open-wearables` y `prod-longevo-open-wearables`.
+Proyecto nuevo `src/open-wearables`, plano en la raíz de `src/`, independiente del `src/longevo/wearables` existente (que conserva su DocumentDB y su ingesta de wearable propietario). Slug de CI: `open-wearables`. GitHub environments: `qa-open-wearables` y `prod-open-wearables`.
+
+No va anidado bajo `src/longevo/`. Esa nesting existe en el repo (`longevo/wearables`, `doctorsv/wearables`) porque el mismo nombre de proyecto tuvo que existir una vez por marca de cliente — los dos se crearon el mismo día. `open-wearables` no tiene esa colisión, y todo lo creado después en el repo está plano en la raíz.
 
 ```
-src/longevo/open-wearables/
+src/open-wearables/
 ├── modules/
-│   ├── constants/          # project = "longevo-open-wearables"
+│   ├── constants/          # project = "open-wearables"
 │   ├── network/            # VPC, subnets, endpoints, flow logs
 │   ├── platform/           # cluster ECS, ALB, WAF, ACM
 │   ├── data/               # Aurora, ElastiCache
@@ -289,7 +291,7 @@ src/longevo/open-wearables/
     └── prod/
 ```
 
-Se reutilizan los módulos compartidos `src/modules/ecs/base`, `src/modules/s3` y `src/modules/sqs`. Nomenclatura de recursos: `${env}-longevo-open-wearables-<name>`, siguiendo la convención de `ecs/base`.
+Se reutilizan los módulos compartidos `src/modules/ecs/base`, `src/modules/s3` y `src/modules/sqs`. Nomenclatura de recursos: `${env}-open-wearables-<name>`, siguiendo la convención de `ecs/base`.
 
 **Orden de implementación sugerido.** Todo se construye primero en `qa` y se replica en `prod` recién al final, siguiendo la recomendación de longevoIac de un ambiente por PR:
 

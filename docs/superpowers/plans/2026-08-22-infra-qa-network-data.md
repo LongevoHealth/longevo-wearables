@@ -4,7 +4,7 @@
 
 **Goal:** Crear en `qa` la VPC dedicada de longevo-wearables y sus dos almacenes de estado — Aurora PostgreSQL Serverless v2 y ElastiCache Valkey — con Terraform, listos para que el stack de servicios ECS se apoye encima.
 
-**Architecture:** Un proyecto nuevo `src/longevo/open-wearables` en el repositorio `longevoIac`, siguiendo la convención de proyectos con `environments/`. Todo se escribe como recursos propios, sin módulos del registry, porque es el estilo del repo. La VPC tiene tres capas de subnets y **ninguna ruta a internet desde las capas privadas**: la salida a AWS se resuelve con VPC endpoints.
+**Architecture:** Un proyecto nuevo `src/open-wearables` en el repositorio `longevoIac`, siguiendo la convención de proyectos con `environments/`. Todo se escribe como recursos propios, sin módulos del registry, porque es el estilo del repo. La VPC tiene tres capas de subnets y **ninguna ruta a internet desde las capas privadas**: la salida a AWS se resuelve con VPC endpoints.
 
 **Tech Stack:** Terraform >= 1.14.0, provider `hashicorp/aws ~> 5.0`, `hashicorp/random ~> 3.0`. Aurora PostgreSQL 17.10, ElastiCache Valkey 9.1.
 
@@ -16,10 +16,10 @@
 - **Sin módulos del registry.** Ningún proyecto de longevoIac usa uno; sólo providers de hashicorp. Todo se escribe como recursos propios.
 - **Ningún proyecto del repo creó una VPC hasta ahora** — todos usan `data "aws_vpc" "default"`. Esta es la primera, así que no hay patrón interno que copiar para la red; sí lo hay para el resto (ver `src/modules/documentdb` como ejemplo de almacén con subnet group, SG y variables).
 - Región de `qa`: `us-west-2`, vía `module.global_constants.qa_aws_region`. Nunca hardcodear.
-- Nombre del proyecto: **`longevo-open-wearables`**. Es el valor del tag `Project` y el prefijo de todo recurso nombrado, con el formato `${environment}-${project}-<nombre>`.
+- Nombre del proyecto: **`open-wearables`**. Es el valor del tag `Project` y el prefijo de todo recurso nombrado, con el formato `${environment}-${project}-<nombre>`.
 - Los tags globales se aplican por `default_tags` en el provider. No plumbear tags a mano salvo un `Name`.
 - CIDR de la VPC de qa: **`10.60.0.0/16`**. Confirmado libre contra el inventario del spec (prod y qa de Longevo usan `172.31.0.0/16`, staging `10.10.0.0/16`, pools de VPN `10.100/10.150/10.200.0.0/22`).
-- Estado en S3: bucket `longevo-terraform-state`, key `longevo/open-wearables/qa/terraform.tfstate`, región `us-east-1`, tabla de lock `terraform-state-lock`, `encrypt = true`.
+- Estado en S3: bucket `longevo-terraform-state`, key `open-wearables/qa/terraform.tfstate`, región `us-east-1`, tabla de lock `terraform-state-lock`, `encrypt = true`.
 - **El CI aplica automáticamente al mergear a `master`, sin approval.** Un PR mergeado crea infraestructura de verdad. Revisar el plan del job antes de mergear.
 - El rol de apply del CI tiene `ec2:*`, `rds:*`, `elasticache:*`, `kms:*`, `secretsmanager:*`, `logs:*`, `s3:*` regionales, más `iam:*` global. Nada de lo que este plan crea queda fuera.
 - Verificación local en cada task: `terraform fmt -recursive`, `terraform init -backend=false`, `terraform validate`. El `terraform plan` autoritativo lo corre el CI en el PR — localmente el backend de S3 puede no ser accesible.
@@ -31,29 +31,29 @@ Todo bajo `/Users/manupandolfi/Longevo/longevoIac`:
 
 | Archivo | Responsabilidad | Task |
 |---|---|---|
-| `src/longevo/open-wearables/modules/constants/main.tf` | Nombre canónico del proyecto (nuevo) | 1 |
-| `src/longevo/open-wearables/environments/qa/main.tf` | Backend, provider, constants (nuevo) | 1 |
-| `src/longevo/open-wearables/README.md` | Qué es el proyecto y cómo se relaciona con `src/longevo/wearables` (nuevo) | 1 |
-| `src/longevo/open-wearables/environments/qa/kms.tf` | CMK del ambiente y su alias (nuevo) | 2 |
-| `src/longevo/open-wearables/environments/qa/network.tf` | VPC, subnets, IGW, route tables (nuevo) | 3 |
-| `src/longevo/open-wearables/environments/qa/endpoints.tf` | VPC endpoints y su security group (nuevo) | 4 |
-| `src/longevo/open-wearables/environments/qa/flow-logs.tf` | Bucket y flow logs de la VPC (nuevo) | 5 |
-| `src/longevo/open-wearables/environments/qa/aurora.tf` | Cluster Aurora, parameter group, subnet group, SG (nuevo) | 6 |
-| `src/longevo/open-wearables/environments/qa/valkey.tf` | ElastiCache Valkey, auth token, SG (nuevo) | 7 |
-| `src/longevo/open-wearables/environments/qa/outputs.tf` | Outputs que consumirá el stack de servicios | 7 |
+| `src/open-wearables/modules/constants/main.tf` | Nombre canónico del proyecto (nuevo) | 1 |
+| `src/open-wearables/environments/qa/main.tf` | Backend, provider, constants (nuevo) | 1 |
+| `src/open-wearables/README.md` | Qué es el proyecto y cómo se relaciona con `src/longevo/wearables` (nuevo) | 1 |
+| `src/open-wearables/environments/qa/kms.tf` | CMK del ambiente y su alias (nuevo) | 2 |
+| `src/open-wearables/environments/qa/network.tf` | VPC, subnets, IGW, route tables (nuevo) | 3 |
+| `src/open-wearables/environments/qa/endpoints.tf` | VPC endpoints y su security group (nuevo) | 4 |
+| `src/open-wearables/environments/qa/flow-logs.tf` | Bucket y flow logs de la VPC (nuevo) | 5 |
+| `src/open-wearables/environments/qa/aurora.tf` | Cluster Aurora, parameter group, subnet group, SG (nuevo) | 6 |
+| `src/open-wearables/environments/qa/valkey.tf` | ElastiCache Valkey, auth token, SG (nuevo) | 7 |
+| `src/open-wearables/environments/qa/outputs.tf` | Outputs que consumirá el stack de servicios | 7 |
 
 ---
 
 ### Task 1: Andamiaje del proyecto
 
 **Files:**
-- Create: `src/longevo/open-wearables/modules/constants/main.tf`
-- Create: `src/longevo/open-wearables/environments/qa/main.tf`
-- Create: `src/longevo/open-wearables/README.md`
+- Create: `src/open-wearables/modules/constants/main.tf`
+- Create: `src/open-wearables/environments/qa/main.tf`
+- Create: `src/open-wearables/README.md`
 
 **Interfaces:**
 - Consumes: `src/modules/constants` (outputs `qa_aws_region`, `qa_environment`, `tags`).
-- Produces: `module.constants.project` = `"longevo-open-wearables"`, y `module.global_constants` — los consumen todas las tasks siguientes.
+- Produces: `module.constants.project` = `"open-wearables"`, y `module.global_constants` — los consumen todas las tasks siguientes.
 
 - [ ] **Step 1: Crear la rama**
 
@@ -63,11 +63,11 @@ cd /Users/manupandolfi/Longevo/longevoIac && git switch master && git pull && gi
 
 - [ ] **Step 2: Crear el módulo de constantes del proyecto**
 
-`src/longevo/open-wearables/modules/constants/main.tf`:
+`src/open-wearables/modules/constants/main.tf`:
 
 ```hcl
 locals {
-  project = "longevo-open-wearables"
+  project = "open-wearables"
 }
 
 output "project" {
@@ -78,7 +78,7 @@ output "project" {
 
 - [ ] **Step 3: Crear el root del ambiente qa**
 
-`src/longevo/open-wearables/environments/qa/main.tf`:
+`src/open-wearables/environments/qa/main.tf`:
 
 ```hcl
 terraform {
@@ -97,7 +97,7 @@ terraform {
 
   backend "s3" {
     bucket         = "longevo-terraform-state"
-    key            = "longevo/open-wearables/qa/terraform.tfstate"
+    key            = "open-wearables/qa/terraform.tfstate"
     region         = "us-east-1"
     dynamodb_table = "terraform-state-lock"
     encrypt        = true
@@ -116,7 +116,7 @@ provider "aws" {
 }
 
 module "global_constants" {
-  source = "../../../../modules/constants"
+  source = "../../../modules/constants"
 }
 
 module "constants" {
@@ -140,10 +140,10 @@ locals {
 
 - [ ] **Step 4: Escribir el README del proyecto**
 
-`src/longevo/open-wearables/README.md`:
+`src/open-wearables/README.md`:
 
 ```markdown
-# longevo-open-wearables
+# open-wearables
 
 Infrastructure for the Open Wearables fork that replaces Spike as Longevo's source
 of wearable health data. The application lives in the `longevo-wearables`
@@ -172,7 +172,7 @@ repository, in `docs/superpowers/specs/2026-08-22-aws-infra-design.md`.
 - [ ] **Step 5: Verificar**
 
 ```bash
-cd /Users/manupandolfi/Longevo/longevoIac/src/longevo/open-wearables/environments/qa && terraform fmt -recursive ../.. && terraform init -backend=false && terraform validate
+cd /Users/manupandolfi/Longevo/longevoIac/src/open-wearables/environments/qa && terraform fmt -recursive ../.. && terraform init -backend=false && terraform validate
 ```
 
 Expected: `Success! The configuration is valid.`
@@ -181,7 +181,7 @@ Expected: `Success! The configuration is valid.`
 
 ```bash
 cd /Users/manupandolfi/Longevo/longevoIac
-git add src/longevo/open-wearables
+git add src/open-wearables
 git commit -m "feat(open-wearables): scaffold the qa terraform project"
 ```
 
@@ -192,7 +192,7 @@ git commit -m "feat(open-wearables): scaffold the qa terraform project"
 Aurora, ElastiCache, los logs y los buckets se cifran con una sola clave por ambiente, según la sección 4 del spec.
 
 **Files:**
-- Create: `src/longevo/open-wearables/environments/qa/kms.tf`
+- Create: `src/open-wearables/environments/qa/kms.tf`
 
 **Interfaces:**
 - Consumes: `local.name`, `data.aws_caller_identity.current` de Task 1.
@@ -200,7 +200,7 @@ Aurora, ElastiCache, los logs y los buckets se cifran con una sola clave por amb
 
 - [ ] **Step 1: Escribir el archivo**
 
-`src/longevo/open-wearables/environments/qa/kms.tf`:
+`src/open-wearables/environments/qa/kms.tf`:
 
 ```hcl
 # One customer-managed key per environment, used by Aurora, ElastiCache, the flow
@@ -226,7 +226,7 @@ resource "aws_kms_alias" "main" {
 - [ ] **Step 2: Verificar**
 
 ```bash
-cd /Users/manupandolfi/Longevo/longevoIac/src/longevo/open-wearables/environments/qa && terraform fmt && terraform validate
+cd /Users/manupandolfi/Longevo/longevoIac/src/open-wearables/environments/qa && terraform fmt && terraform validate
 ```
 
 Expected: válido.
@@ -234,7 +234,7 @@ Expected: válido.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/longevo/open-wearables/environments/qa/kms.tf
+git add src/open-wearables/environments/qa/kms.tf
 git commit -m "feat(open-wearables): add the qa customer-managed key"
 ```
 
@@ -245,7 +245,7 @@ git commit -m "feat(open-wearables): add the qa customer-managed key"
 Tres capas: pública sólo para el ALB, privada para las tasks de ECS, aislada para los almacenes. Las dos últimas **no tienen ruta por defecto**: sin NAT y sin IGW, no hay salida a internet.
 
 **Files:**
-- Create: `src/longevo/open-wearables/environments/qa/network.tf`
+- Create: `src/open-wearables/environments/qa/network.tf`
 
 **Interfaces:**
 - Consumes: `local.name`, `local.azs` de Task 1.
@@ -253,7 +253,7 @@ Tres capas: pública sólo para el ALB, privada para las tasks de ECS, aislada p
 
 - [ ] **Step 1: Escribir el archivo**
 
-`src/longevo/open-wearables/environments/qa/network.tf`:
+`src/open-wearables/environments/qa/network.tf`:
 
 ```hcl
 resource "aws_vpc" "main" {
@@ -420,7 +420,7 @@ Expected: válido.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/longevo/open-wearables/environments/qa/network.tf
+git add src/open-wearables/environments/qa/network.tf
 git commit -m "feat(open-wearables): add the qa vpc, subnets and routing"
 ```
 
@@ -431,7 +431,7 @@ git commit -m "feat(open-wearables): add the qa vpc, subnets and routing"
 Sin NAT, las tasks alcanzan AWS únicamente por endpoints. Los cinco de interface son exactamente los que el stack de servicios va a necesitar: bajar imágenes de ECR, escribir logs, leer secretos y permitir `ecs execute-command`.
 
 **Files:**
-- Create: `src/longevo/open-wearables/environments/qa/endpoints.tf`
+- Create: `src/open-wearables/environments/qa/endpoints.tf`
 
 **Interfaces:**
 - Consumes: `aws_vpc.main`, `aws_subnet.private`, `aws_route_table.private`, `aws_route_table.isolated` de Task 3.
@@ -439,7 +439,7 @@ Sin NAT, las tasks alcanzan AWS únicamente por endpoints. Los cinco de interfac
 
 - [ ] **Step 1: Escribir el archivo**
 
-`src/longevo/open-wearables/environments/qa/endpoints.tf`:
+`src/open-wearables/environments/qa/endpoints.tf`:
 
 ```hcl
 # Interface endpoints are billed per AZ, so qa runs them in a single AZ and prod
@@ -512,7 +512,7 @@ resource "aws_vpc_endpoint" "s3" {
 - [ ] **Step 2: Verificar**
 
 ```bash
-cd /Users/manupandolfi/Longevo/longevoIac/src/longevo/open-wearables/environments/qa && terraform fmt && terraform validate
+cd /Users/manupandolfi/Longevo/longevoIac/src/open-wearables/environments/qa && terraform fmt && terraform validate
 ```
 
 Expected: válido. `terraform fmt` va a reacomodar la lista de `interface_endpoints`; dejarlo como la deje.
@@ -520,7 +520,7 @@ Expected: válido. `terraform fmt` va a reacomodar la lista de `interface_endpoi
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/longevo/open-wearables/environments/qa/endpoints.tf
+git add src/open-wearables/environments/qa/endpoints.tf
 git commit -m "feat(open-wearables): add vpc endpoints so private subnets need no nat"
 ```
 
@@ -531,7 +531,7 @@ git commit -m "feat(open-wearables): add vpc endpoints so private subnets need n
 Evidencia de red para ISO 27001. Van a S3 y no a CloudWatch: sale más barato al volumen que genera una VPC con tráfico de ingesta, y evita un rol de IAM que no aporta nada.
 
 **Files:**
-- Create: `src/longevo/open-wearables/environments/qa/flow-logs.tf`
+- Create: `src/open-wearables/environments/qa/flow-logs.tf`
 
 **Interfaces:**
 - Consumes: `aws_vpc.main` (Task 3), `aws_kms_key.main` (Task 2), y el módulo compartido `src/modules/s3`.
@@ -547,13 +547,13 @@ Confirmar los nombres exactos de las variables y de los outputs (`bucket_arn`, `
 
 - [ ] **Step 2: Escribir el archivo**
 
-`src/longevo/open-wearables/environments/qa/flow-logs.tf`:
+`src/open-wearables/environments/qa/flow-logs.tf`:
 
 ```hcl
 # Flow logs land in S3 rather than CloudWatch Logs: at this volume S3 is
 # materially cheaper, and the S3 destination needs no IAM role at all.
 module "flow_logs_bucket" {
-  source = "../../../../modules/s3"
+  source = "../../../modules/s3"
 
   name        = "vpc-flow-logs"
   project     = module.constants.project
@@ -592,7 +592,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "flow_logs" {
 - [ ] **Step 3: Verificar**
 
 ```bash
-cd /Users/manupandolfi/Longevo/longevoIac/src/longevo/open-wearables/environments/qa && terraform fmt && terraform init -backend=false && terraform validate
+cd /Users/manupandolfi/Longevo/longevoIac/src/open-wearables/environments/qa && terraform fmt && terraform init -backend=false && terraform validate
 ```
 
 `init` se vuelve a correr porque hay un módulo nuevo. Expected: válido.
@@ -600,7 +600,7 @@ cd /Users/manupandolfi/Longevo/longevoIac/src/longevo/open-wearables/environment
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/longevo/open-wearables/environments/qa/flow-logs.tf
+git add src/open-wearables/environments/qa/flow-logs.tf
 git commit -m "feat(open-wearables): ship vpc flow logs to s3 with a 90 day lifecycle"
 ```
 
@@ -609,7 +609,7 @@ git commit -m "feat(open-wearables): ship vpc flow logs to s3 with a 90 day life
 ### Task 6: Aurora PostgreSQL Serverless v2
 
 **Files:**
-- Create: `src/longevo/open-wearables/environments/qa/aurora.tf`
+- Create: `src/open-wearables/environments/qa/aurora.tf`
 
 **Interfaces:**
 - Consumes: `aws_vpc.main`, `aws_subnet.isolated` (Task 3), `aws_kms_key.main` (Task 2).
@@ -617,7 +617,7 @@ git commit -m "feat(open-wearables): ship vpc flow logs to s3 with a 90 day life
 
 - [ ] **Step 1: Escribir el archivo**
 
-`src/longevo/open-wearables/environments/qa/aurora.tf`:
+`src/open-wearables/environments/qa/aurora.tf`:
 
 ```hcl
 resource "aws_db_subnet_group" "aurora" {
@@ -729,7 +729,7 @@ resource "aws_rds_cluster_instance" "writer" {
 - [ ] **Step 2: Verificar**
 
 ```bash
-cd /Users/manupandolfi/Longevo/longevoIac/src/longevo/open-wearables/environments/qa && terraform fmt && terraform validate
+cd /Users/manupandolfi/Longevo/longevoIac/src/open-wearables/environments/qa && terraform fmt && terraform validate
 ```
 
 Expected: válido.
@@ -739,7 +739,7 @@ Expected: válido.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/longevo/open-wearables/environments/qa/aurora.tf
+git add src/open-wearables/environments/qa/aurora.tf
 git commit -m "feat(open-wearables): add the qa aurora serverless v2 cluster"
 ```
 
@@ -750,8 +750,8 @@ git commit -m "feat(open-wearables): add the qa aurora serverless v2 cluster"
 Valkey y no Redis: ElastiCache no ofrece Redis OSS 8 — corta en 7.1 — y el compose del fork usa Redis 8. Valkey 9.1 es wire-compatible con lo que usan Celery y redis-py.
 
 **Files:**
-- Create: `src/longevo/open-wearables/environments/qa/valkey.tf`
-- Create: `src/longevo/open-wearables/environments/qa/outputs.tf`
+- Create: `src/open-wearables/environments/qa/valkey.tf`
+- Create: `src/open-wearables/environments/qa/outputs.tf`
 
 **Interfaces:**
 - Consumes: `aws_vpc.main`, `aws_subnet.isolated` (Task 3), `aws_kms_key.main` (Task 2), `aws_rds_cluster.main`, `aws_security_group.aurora` (Task 6).
@@ -759,7 +759,7 @@ Valkey y no Redis: ElastiCache no ofrece Redis OSS 8 — corta en 7.1 — y el c
 
 - [ ] **Step 1: Escribir el archivo de Valkey**
 
-`src/longevo/open-wearables/environments/qa/valkey.tf`:
+`src/open-wearables/environments/qa/valkey.tf`:
 
 ```hcl
 resource "aws_elasticache_subnet_group" "valkey" {
@@ -845,7 +845,7 @@ resource "aws_elasticache_replication_group" "main" {
 
 - [ ] **Step 2: Escribir los outputs**
 
-`src/longevo/open-wearables/environments/qa/outputs.tf`:
+`src/open-wearables/environments/qa/outputs.tf`:
 
 ```hcl
 output "vpc_id" {
@@ -902,7 +902,7 @@ output "kms_key_arn" {
 - [ ] **Step 3: Verificar**
 
 ```bash
-cd /Users/manupandolfi/Longevo/longevoIac/src/longevo/open-wearables/environments/qa && terraform fmt && terraform validate
+cd /Users/manupandolfi/Longevo/longevoIac/src/open-wearables/environments/qa && terraform fmt && terraform validate
 ```
 
 Expected: válido.
@@ -910,7 +910,7 @@ Expected: válido.
 - [ ] **Step 4: Revisar el conjunto completo con ojos frescos**
 
 ```bash
-terraform fmt -check -recursive /Users/manupandolfi/Longevo/longevoIac/src/longevo/open-wearables
+terraform fmt -check -recursive /Users/manupandolfi/Longevo/longevoIac/src/open-wearables
 ```
 
 Expected: sin salida. Después leer los siete archivos de una sentada y confirmar tres cosas: que ningún recurso quedó en la subnet equivocada, que ninguna capa privada o aislada tiene ruta a `0.0.0.0/0`, y que todo lo que se cifra usa `aws_kms_key.main`.
@@ -918,7 +918,7 @@ Expected: sin salida. Después leer los siete archivos de una sentada y confirma
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/longevo/open-wearables/environments/qa/valkey.tf src/longevo/open-wearables/environments/qa/outputs.tf
+git add src/open-wearables/environments/qa/valkey.tf src/open-wearables/environments/qa/outputs.tf
 git commit -m "feat(open-wearables): add the qa valkey replication group and stack outputs"
 ```
 
@@ -928,7 +928,7 @@ git commit -m "feat(open-wearables): add the qa valkey replication group and sta
 
 Dos cosas que no son código y que el implementador **no** debe hacer solo:
 
-1. **El entorno de GitHub `qa-longevo-open-wearables`** puede necesitar existir para que el job de plan corra. Si el workflow falla por eso, avisar al controller — se crea desde Settings → Environments, es una acción manual del usuario.
+1. **El entorno de GitHub `qa-open-wearables`** puede necesitar existir para que el job de plan corra. Si el workflow falla por eso, avisar al controller — se crea desde Settings → Environments, es una acción manual del usuario.
 2. **Mergear aplica.** El CI de este repo hace apply automático al mergear a `master`, sin approval. Este PR crea una VPC, un cluster Aurora y un ElastiCache reales. El plan del job es lo que hay que leer antes de mergear, no el resumen del comentario.
 
 ## Fuera del alcance de este plan
@@ -943,3 +943,9 @@ Dos cosas más que este plan deliberadamente no hace:
 
 - **Los roles `app` y `migrator` de PostgreSQL.** El spec pide separar la credencial de runtime de la que aplica DDL, pero crearlas desde Terraform exigiría el provider `cyrilgdn/postgresql`, y los runners de GitHub Actions no tienen ruta hacia una Aurora en subnets aisladas. Las crea el job de migración, que sí corre dentro de la VPC. Va en el plan 3, junto con ese job.
 - **El guard de dedupe**, que es código del repo del fork y bloquea la primera cohorte de migración.
+
+## Nota post-ejecución: el proyecto se movió a `src/open-wearables`
+
+Este plan se ejecutó tal como está escrito, con el proyecto anidado en `src/longevo/open-wearables`. Un review de un compañero en el PR (`longevoIac#73`) señaló que esa nesting no correspondía: existe en el repo únicamente para desambiguar el mismo nombre de proyecto entre marcas de cliente (`longevo/wearables` y `doctorsv/wearables` se crearon el mismo día), y `open-wearables` no tiene esa colisión. Todo lo creado después en el repo está plano en la raíz de `src/`.
+
+Como nada se había aplicado todavía, se corrigió con un `git mv` más cuatro ediciones (las rutas de módulo, la state key, `local.project`, el README) en un commit aparte sobre la misma rama, y este documento se actualizó para reflejar la ruta final. El código en el texto de arriba ya está en su ubicación definitiva; lo único que no representa el historial real es que el propio plan no anticipó la corrección — quedó como una task 8 implícita, hecha fuera de este documento.
