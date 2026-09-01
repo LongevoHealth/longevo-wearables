@@ -778,6 +778,47 @@ resource "aws_iam_role_policy" "db_bootstrap_task" {
   policy = data.aws_iam_policy_document.db_bootstrap_task_extra.json
 }
 
+# A dedicated execution role, not the shared aws_iam_role.execution every
+# application service uses. ECS resolves a container's `secrets` block via the
+# execution role, not the task role, and this task needs the RDS-managed
+# master secret — giving every application service read access to that would
+# be a real security regression, not a convenience.
+resource "aws_iam_role" "db_bootstrap_execution" {
+  name               = "${local.name}-db-bootstrap-execution"
+  assume_role_policy = module.tasks_assume_policy.json
+}
+
+resource "aws_iam_role_policy_attachment" "db_bootstrap_execution_managed" {
+  role       = aws_iam_role.db_bootstrap_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+data "aws_iam_policy_document" "db_bootstrap_execution_extra" {
+  statement {
+    sid       = "ReadMasterAndBootstrapSecrets"
+    effect    = "Allow"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [
+      aws_rds_cluster.main.master_user_secret[0].secret_arn,
+      aws_secretsmanager_secret.db_app_password.arn,
+      aws_secretsmanager_secret.db_migrator_password.arn,
+    ]
+  }
+
+  statement {
+    sid       = "DecryptBootstrapSecrets"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_key.main.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "db_bootstrap_execution_extra" {
+  name   = "read-secrets"
+  role   = aws_iam_role.db_bootstrap_execution.id
+  policy = data.aws_iam_policy_document.db_bootstrap_execution_extra.json
+}
+
 resource "aws_security_group" "db_bootstrap" {
   name        = "${local.name}-db-bootstrap"
   description = "Bootstrap task connecting to Aurora as master"
@@ -812,7 +853,7 @@ resource "aws_ecs_task_definition" "db_bootstrap" {
   memory                   = 512
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  execution_role_arn       = aws_iam_role.execution.arn
+  execution_role_arn       = aws_iam_role.db_bootstrap_execution.arn
   task_role_arn            = aws_iam_role.db_bootstrap_task.arn
 
   container_definitions = jsonencode([{
