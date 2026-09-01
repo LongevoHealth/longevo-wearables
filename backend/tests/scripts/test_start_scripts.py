@@ -31,3 +31,14 @@ def test_app_script_delegates_initialization_and_starts_the_server() -> None:
     # The init steps must live in exactly one place.
     assert "alembic upgrade head" not in app_sh
     assert "seed_admin.py" not in app_sh
+
+
+def test_worker_script_queue_list_is_configurable() -> None:
+    """A single worker.sh backs multiple ECS services (default vs. bulk backfill),
+    each listening to a different queue subset — so the queue list must be an
+    override, not a hardcoded value."""
+    worker_sh = (SCRIPTS_DIR / "worker.sh").read_text()
+
+    assert "${CELERY_QUEUES:-default,sdk_sync,garmin_sync,webhook_sync}" in worker_sh
+    # The old hardcoded invocation must be gone, or the override is a no-op.
+    assert "-Q default,sdk_sync,garmin_sync,webhook_sync" not in worker_sh
