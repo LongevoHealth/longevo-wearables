@@ -874,28 +874,46 @@ resource "aws_ecs_task_definition" "db_bootstrap" {
     # ({"username":...,"password":...,"host":...}), not a ready DSN — so the
     # command parses it with grep/cut rather than jq, which alpine's base image
     # does not carry (sh/grep/cut do, no extra install needed).
+    #
+    # Passwords reach psql via `secrets` (APP_PASSWORD/MIGRATOR_PASSWORD, real
+    # shell env vars) and are substituted into the SQL with psql's `-v`/`:'var'`
+    # syntax, not Terraform string interpolation — a password interpolated
+    # directly into this command would land in container_definitions in plain
+    # text, readable by anything with ecs:DescribeTaskDefinition.
+    #
+    # GRANT ALL PRIVILEGES ON DATABASE is not enough on its own: PostgreSQL 15+
+    # revokes CREATE on schema public from PUBLIC by default, so without the
+    # schema-level grants below, migrator cannot create a single table and the
+    # migration task fails on the very first deploy. migrator does not get
+    # CREATEDB — the database already exists, and the whole point of splitting
+    # migrator from app is least privilege.
     command = ["sh", "-c", <<-EOT
       set -e
       HOST=$(echo "$MASTER_DSN_JSON" | grep -o '"host":"[^"]*"' | cut -d'"' -f4)
-      PASSWORD=$(echo "$MASTER_DSN_JSON" | grep -o '"password":"[^"]*"' | cut -d'"' -f4)
-      export PGPASSWORD="$PASSWORD"
-      psql "host=$HOST port=5432 dbname=postgres user=postgres sslmode=require" <<'SQL'
+      MASTER_PASSWORD=$(echo "$MASTER_DSN_JSON" | grep -o '"password":"[^"]*"' | cut -d'"' -f4)
+      export PGPASSWORD="$MASTER_PASSWORD"
+      psql "host=$HOST port=5432 dbname=postgres user=postgres sslmode=require" \
+        -v app_password="$APP_PASSWORD" -v migrator_password="$MIGRATOR_PASSWORD" <<'SQL'
       DO $$
       BEGIN
         IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app') THEN
-          CREATE ROLE app LOGIN PASSWORD '${random_password.db_app_password.result}';
+          CREATE ROLE app LOGIN PASSWORD :'app_password';
         ELSE
-          ALTER ROLE app WITH PASSWORD '${random_password.db_app_password.result}';
+          ALTER ROLE app WITH PASSWORD :'app_password';
         END IF;
         IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'migrator') THEN
-          CREATE ROLE migrator LOGIN PASSWORD '${random_password.db_migrator_password.result}' CREATEDB;
+          CREATE ROLE migrator LOGIN PASSWORD :'migrator_password';
         ELSE
-          ALTER ROLE migrator WITH PASSWORD '${random_password.db_migrator_password.result}';
+          ALTER ROLE migrator WITH PASSWORD :'migrator_password';
         END IF;
       END
       $$;
       GRANT ALL PRIVILEGES ON DATABASE open_wearables TO migrator;
       GRANT CONNECT ON DATABASE open_wearables TO app;
+      GRANT CREATE, USAGE ON SCHEMA public TO migrator;
+      GRANT USAGE ON SCHEMA public TO app;
+      ALTER DEFAULT PRIVILEGES FOR ROLE migrator IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app;
+      ALTER DEFAULT PRIVILEGES FOR ROLE migrator IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO app;
       SQL
     EOT
     ]
@@ -903,7 +921,9 @@ resource "aws_ecs_task_definition" "db_bootstrap" {
       { name = "PGSSLMODE", value = "require" }
     ]
     secrets = [
-      { name = "MASTER_DSN_JSON", valueFrom = aws_rds_cluster.main.master_user_secret[0].secret_arn }
+      { name = "MASTER_DSN_JSON", valueFrom = aws_rds_cluster.main.master_user_secret[0].secret_arn },
+      { name = "APP_PASSWORD", valueFrom = aws_secretsmanager_secret.db_app_password.arn },
+      { name = "MIGRATOR_PASSWORD", valueFrom = aws_secretsmanager_secret.db_migrator_password.arn }
     ]
     logConfiguration = {
       logDriver = "awslogs"
@@ -923,10 +943,13 @@ Agregar al final del mismo archivo:
 
 ```hcl
 resource "null_resource" "db_bootstrap_run" {
+  # .result, not .id: random_password's id attribute is the hardcoded constant
+  # "none" for every instance of that resource type — it never changes, so a
+  # trigger built from .id can never actually fire on a password rotation.
   triggers = {
     task_definition_arn = aws_ecs_task_definition.db_bootstrap.arn
-    app_password         = random_password.db_app_password.id
-    migrator_password    = random_password.db_migrator_password.id
+    app_password         = random_password.db_app_password.result
+    migrator_password    = random_password.db_migrator_password.result
   }
 
   provisioner "local-exec" {
@@ -2111,11 +2134,16 @@ data "aws_iam_policy_document" "deploy" {
   }
 
   # The migration task has no service — RunTask instead of UpdateService.
+  # arn_without_revision, not .arn: the task definition has
+  # ignore_changes = [container_definitions], so Terraform never updates the
+  # revision pinned in state. .arn (which includes ":N") would authorize only
+  # whatever revision existed at the first apply — every real revision the
+  # deploy pipeline registers afterward would get AccessDenied.
   statement {
     sid    = "EcsRunMigrationTask"
     effect = "Allow"
     actions = ["ecs:RunTask"]
-    resources = [aws_ecs_task_definition.migration.arn]
+    resources = ["${aws_ecs_task_definition.migration.arn_without_revision}:*"]
 
     condition {
       test     = "ArnEquals"
@@ -2286,4 +2314,6 @@ git commit -m "feat(open-wearables): expose platform outputs for the deploy pipe
 | `--concurrency=1` en `celery-worker-bulk` | Ítem obligatorio antes de la primera cohorte de migración, ver spec sección 6 y 8 — no es parte de la plataforma base |
 | Guard de dedupe para reprocesamiento de sleep | Código en `longevo-wearables`, bloquea la primera cohorte, sin plan escrito todavía |
 | **Rotación automática de `db_app_password`** con `force-new-deployment` de los servicios | El spec (sección 4) la pide explícitamente y este plan **no** la implementa — genera el secreto una vez, estático. Agregar `aws_secretsmanager_secret_rotation` con una Lambda de rotación, más el trigger de `force-new-deployment`, es una pieza propia (Lambda + EventBridge + permisos), no un afterthought de este plan ya grande. Gap real, no un olvido silencioso — anotado para un plan chico aparte antes de considerar qa "productionizado". `MASTER_KEY` sigue sin rotación a propósito, según el spec. |
+| **Logging del WAF a CloudWatch y access logs del ALB a S3** | El spec (sección 4) los pide explícitamente para evidencia de auditoría HIPAA/ISO 27001; el review final de esta rama los encontró ausentes y sin siquiera estar en esta tabla — un olvido silencioso, no una decisión. Requieren infraestructura nueva: un bucket S3 + policy para los access logs del ALB, un log group `aws-waf-logs-*` (nombre exigido por AWS para destinos de WAF) y los recursos `aws_wafv2_web_acl_logging_configuration`/`access_logs` correspondientes. Deliberadamente no se metió en el fix wave del review final — es superficie nueva real, y forzarla ahí arriesgaba un control de compliance mal revisado. qa corre un ciclo de review sin esta evidencia; **no aceptable llevarlo a prod sin resolverlo antes**. |
+| Dedicar un rol de ejecución propio a cada uno de los cinco servicios (hoy comparten uno) | El rol compartido le da a `frontend` — que no consume ningún secreto — acceso IAM de lectura a todos los secretos de la app, incluidas las credenciales de base. No es una vía de explotación activa hoy (nada en el contenedor de frontend llama a `GetSecretValue`), pero es una superficie más ancha de lo necesario. El mismo patrón que ya se usó para el bootstrap (rol dedicado cuando la sensibilidad difiere) aplicado a los cinco sería la corrección completa — cirugía real, no se justificó para que qa funcione. |
 | Replicar todo esto en prod | Plan 5, con 3 AZs y los sizings de prod |
