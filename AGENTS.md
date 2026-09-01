@@ -126,3 +126,18 @@ When working on documentation in the `docs/` directory:
 - **RequestExample/ResponseExample** - For API endpoint documentation
 - **ParamField** - For API parameters, **ResponseField** - For API responses
 - **Expandable** - For nested object properties or hierarchical information
+
+---
+
+## Longevo fork
+
+This fork replaces Spike as Longevo's wearable data source and runs on AWS (ECS
+Fargate, Aurora, ElastiCache) provisioned from the `longevoIac` repository. The
+guiding principle is **minimum divergence from upstream**: infrastructure is adapted
+around the code, not the other way round.
+
+- [docs/superpowers/specs/2026-08-22-aws-infra-design.md](docs/superpowers/specs/2026-08-22-aws-infra-design.md) — infrastructure design, the decision log behind it, and the open verification items. Read before changing anything about deployment, ingestion, Celery reliability or the startup scripts.
+- [docs/superpowers/plans/2026-08-22-fork-ingest-code-delta.md](docs/superpowers/plans/2026-08-22-fork-ingest-code-delta.md) — the four code changes the AWS deployment needs, and why each one exists.
+
+Everything above this section is upstream content; keep fork-specific notes here so
+merges conflict in one predictable place.

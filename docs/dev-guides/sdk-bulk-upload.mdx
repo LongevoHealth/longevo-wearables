@@ -1,0 +1,96 @@
+---
+title: "Bulk SDK uploads via S3"
+description: "Upload large mobile-SDK batches to S3 with a presigned form instead of posting them in the request body."
+keywords: ["sdk bulk upload", "presigned s3 form", "mobile sdk historical backfill", "sns notification sdk import"]
+"og:title": "Bulk SDK uploads via S3 | Open Wearables"
+"og:description": "Upload large mobile-SDK batches to S3 with a presigned form instead of posting them in the request body."
+"og:url": "https://docs.openwearables.io/dev-guides/sdk-bulk-upload"
+"og:type": "article"
+"twitter:title": "Bulk SDK uploads via S3 | Open Wearables"
+"twitter:description": "Upload large mobile-SDK batches to S3 with a presigned form instead of posting them in the request body."
+"twitter:card": "summary_large_image"
+---
+
+## When to use which path
+
+The mobile SDK has two ways to deliver a batch:
+
+| Path | Use it for | Feedback |
+|---|---|---|
+| `POST /api/v1/sdk/users/{user_id}/sync` | Incremental syncs under ~1 MB | Synchronous `400`/`403` on a bad request, `202` once queued |
+| `POST /api/v1/sdk/users/{user_id}/sync/s3` | Historical backfill and any batch above the threshold | Synchronous `400`/`403` on a bad request, `200` with the upload form; the batch itself is validated asynchronously, after the upload |
+
+Large batches take the S3 path so a multi-megabyte payload never travels through the
+request body or the task broker.
+
+## Flow
+
+1. The SDK calls `POST /api/v1/sdk/users/{user_id}/sync/s3` with its SDK token.
+   The response contains `upload_url`, `form_fields`, `file_key`, `expires_in`,
+   `max_file_size` and `bucket`.
+2. The SDK posts the batch to `upload_url` as `multipart/form-data`: every entry of
+   `form_fields` must be sent as its own form field, in the response's order, before
+   the file field, and the file field must carry `Content-Type: application/json`.
+   Use `file_key` as given — do not construct your own key.
+3. The bucket notification reaches `POST /api/v1/sns/notification`, which verifies
+   the SNS signature and topic ARN, then dispatches the import to the worker that
+   downloads the object and reuses the same import path as the direct-POST endpoint.
+
+The presigned form expires in 15 minutes (900 seconds) by default; you can request
+anywhere from 60 to 3600 seconds via `expiration_seconds`. The upload is capped at
+50 MB — that ceiling is enforced server-side and cannot be raised. `max_file_size`
+defaults to the full 50 MB and only lets you ask for a *smaller* cap (down to 1 KB);
+a request for more than 50 MB is rejected with a `400` before any presigned form is
+issued. The cap is set by what the worker must hold in memory to import the batch,
+not by S3: split a backfill larger than 50 MB into several batches, each with its own
+presigned form.
+
+## Object key layout
+
+Keys are `{user_id}/sdk/{batch_id}.json`. The middle segment is what routes the
+object to the SDK import rather than the Apple Health XML import, and the first
+segment is how the notification handler recovers the user. `batch_id` is generated
+server-side as part of the presigned response — do not flatten the key or invent
+your own `batch_id`.
+
+## Retries
+
+**Retry a failed upload.** If an upload or its confirmation fails, re-request a
+presigned form and send the batch again. Withholding a retry is the one choice that
+reliably loses data.
+
+Duplicate processing is real, but it does not originate in the SDK: the bucket
+notification is delivered at least once, and a worker killed mid-task has its message
+redelivered by the broker, so the server can process the same object twice even when
+the SDK uploaded it exactly once. That means holding back a retry buys nothing — it
+cannot prevent the duplication, it can only lose the batch. Here is what the import
+does about it:
+
+- **Time-series samples are safe to retry.** This covers both the top-level
+  `records` array and the per-metric statistics extracted from each `workouts`
+  entry. Every sample is written with an upsert keyed on
+  `(data_source, series type, timestamp)` — re-sending the same batch overwrites
+  the same rows with the same values instead of adding new ones.
+- **Workouts are safe to retry.** Each workout's header row is written with an
+  insert keyed on `(data_source, start time, end time)` that is a no-op on a
+  conflict, and its detail row (calories, distance, heart-rate stats, …) is only
+  ever written the first time that header is actually inserted — so a duplicate
+  workout is silently skipped rather than duplicated.
+- **Sleep is safe to re-send once the first import has finished.** Sleep sessions
+  aren't a single idempotent database write: they're assembled from a Redis-backed
+  state machine that accumulates stage transitions and then merges the finished
+  session with any adjacent session already stored for that user. Re-importing
+  identical stage intervals collapses them back onto the same session instead of
+  extending it, so a sequential replay of the same batch lands where it started.
+  Sending per-stage boundaries rather than one aggregate sleep block is what puts a
+  batch on that path, so prefer stage intervals when the platform exposes them.
+- **The remaining sleep case is *concurrent* reprocessing, and it is a server-side
+  concern.** If two imports of the same user's sleep overlap in time, they can race
+  the session state and the adjacent-session merge. That window is opened by
+  at-least-once bucket notification and broker redelivery — both server-side, neither
+  visible to the SDK, and nothing the SDK sends or withholds changes it. It is being
+  closed on the server before the first migration cohort.
+
+So: retry uploads normally, including batches that contain sleep. If an upload or its
+bucket-event delivery times out and you can't confirm whether it landed, resend it —
+an extra copy is handled by the rules above, a missing copy is not recoverable.

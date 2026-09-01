@@ -37,6 +37,7 @@ from .garmin.backfill_trigger import (
 from .garmin.gc_task import gc_stuck_backfills
 from .periodic_sync_task import sync_all_users
 from .process_aws_upload_task import process_aws_upload
+from .process_s3_sdk_upload_task import process_s3_sdk_upload
 from .process_sdk_upload_task import process_sdk_upload
 from .process_xml_upload_task import process_xml_upload
 from .refresh_dashboard_stats_task import refresh_dashboard_total_data_points
@@ -70,6 +71,7 @@ __all__ = [
     "finalize_stale_sleeps",
     "process_sdk_upload",
     "process_aws_upload",
+    "process_s3_sdk_upload",
     "process_xml_upload",
     "sync_vendor_data",
     "sync_all_users",

@@ -28,7 +28,18 @@ def _get_import_service(provider: str) -> SDKImportService:
     raise ValueError(f"Unsupported provider: {provider}")
 
 
-@shared_task(queue="sdk_sync")
+@shared_task(
+    queue="sdk_sync",
+    # An import must finish well inside the broker's visibility timeout (3600s, set in
+    # celery/core.py): with `task_acks_late`, a task still running when that expires gets
+    # its message handed to a second worker, which then imports the same batch
+    # concurrently. 31 min is under half that window, so even a redelivered attempt
+    # cannot overlap the original. The soft limit fires a minute earlier to raise
+    # SoftTimeLimitExceeded, so a stuck batch fails inside the task instead of being
+    # killed mid-transaction.
+    soft_time_limit=1800,  # 30 min soft limit — raises SoftTimeLimitExceeded
+    time_limit=1860,  # 31 min hard limit
+)
 def process_sdk_upload(
     content: str,
     content_type: str,
