@@ -56,4 +56,21 @@ if [ "$family" != "qa-open-wearables-api" ]; then
   exit 1
 fi
 
+# --- test: no command argument leaves an existing command untouched ---
+FIXTURE_WITH_COMMAND=$(echo "$FIXTURE" | jq '.taskDefinition.containerDefinitions[0].command = ["old", "command"]')
+result_no_override=$(echo "$FIXTURE_WITH_COMMAND" | jq '.taskDefinition' | patch_image "111111111111.dkr.ecr.us-west-2.amazonaws.com/backend:abc123")
+command_value=$(echo "$result_no_override" | jq -c '.containerDefinitions[0].command')
+if [ "$command_value" != '["old","command"]' ]; then
+  echo "FAIL: command should be untouched without an override, got: $command_value"
+  exit 1
+fi
+
+# --- test: a command argument replaces the existing command ---
+result_override=$(echo "$FIXTURE_WITH_COMMAND" | jq '.taskDefinition' | patch_image "111111111111.dkr.ecr.us-west-2.amazonaws.com/backend:abc123" '["python", "scripts/bootstrap_db_roles.py"]')
+command_value=$(echo "$result_override" | jq -c '.containerDefinitions[0].command')
+if [ "$command_value" != '["python","scripts/bootstrap_db_roles.py"]' ]; then
+  echo "FAIL: command override did not apply, got: $command_value"
+  exit 1
+fi
+
 echo "All tests passed"

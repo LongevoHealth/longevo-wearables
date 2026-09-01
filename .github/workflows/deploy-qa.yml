@@ -64,7 +64,13 @@ jobs:
           arn=$(.github/scripts/register-task-def-with-image.sh qa-open-wearables-migration "${{ steps.images.outputs.backend }}")
           echo "arn=$arn" >> "$GITHUB_OUTPUT"
 
-      - name: Get private subnets and migration security group
+      - name: Register db-bootstrap task definition with the new image
+        id: db-bootstrap-td
+        run: |
+          arn=$(.github/scripts/register-task-def-with-image.sh qa-open-wearables-db-bootstrap "${{ steps.images.outputs.backend }}" '["python", "scripts/bootstrap_db_roles.py"]')
+          echo "arn=$arn" >> "$GITHUB_OUTPUT"
+
+      - name: Get private subnets and task security groups
         id: network
         run: |
           # Private subnets are tagged Name = "qa-open-wearables-private-<az>"
@@ -78,16 +84,49 @@ jobs:
           sg=$(aws ec2 describe-security-groups \
             --filters "Name=group-name,Values=${{ env.CLUSTER }}-migration" \
             --query 'SecurityGroups[0].GroupId' --output text)
+          bootstrap_sg=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${{ env.CLUSTER }}-db-bootstrap" \
+            --query 'SecurityGroups[0].GroupId' --output text)
           if [ -z "$subnets" ]; then
-            echo "::error::No private subnets matched tag Name=${CLUSTER}-private-*. Cannot run the migration task."
+            echo "::error::No private subnets matched tag Name=${CLUSTER}-private-*. Cannot run the migration or db-bootstrap task."
             exit 1
           fi
           if [ -z "$sg" ] || [ "$sg" = "None" ]; then
             echo "::error::No security group matched group-name=${CLUSTER}-migration (got ${sg:-empty}). Cannot run the migration task."
             exit 1
           fi
+          if [ -z "$bootstrap_sg" ] || [ "$bootstrap_sg" = "None" ]; then
+            echo "::error::No security group matched group-name=${CLUSTER}-db-bootstrap (got ${bootstrap_sg:-empty}). Cannot run the db-bootstrap task."
+            exit 1
+          fi
           echo "subnets=$subnets" >> "$GITHUB_OUTPUT"
           echo "sg=$sg" >> "$GITHUB_OUTPUT"
+          echo "bootstrap_sg=$bootstrap_sg" >> "$GITHUB_OUTPUT"
+
+      - name: Run db-bootstrap — abort the deploy if this fails
+        run: |
+          run_task_json=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition "${{ steps.db-bootstrap-td.outputs.arn }}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ steps.network.outputs.subnets }}],securityGroups=[${{ steps.network.outputs.bootstrap_sg }}],assignPublicIp=DISABLED}")
+          task_arn=$(jq -r '.tasks[0].taskArn // empty' <<< "$run_task_json")
+          failures=$(jq -c '.failures // []' <<< "$run_task_json")
+          if [ -z "$task_arn" ] || [ "$task_arn" = "None" ] || [ "$task_arn" = "null" ]; then
+            echo "::error::db-bootstrap run-task did not start a task (no task ARN). failures=${failures}"
+            echo "$run_task_json"
+            exit 1
+          fi
+          echo "db-bootstrap task: $task_arn"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task_arn"
+          task_desc=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task_arn")
+          exit_code=$(jq -r '.tasks[0].containers[0].exitCode // empty' <<< "$task_desc")
+          stopped_reason=$(jq -r '.tasks[0].stoppedReason // empty' <<< "$task_desc")
+          stop_code=$(jq -r '.tasks[0].stopCode // empty' <<< "$task_desc")
+          if [ "$exit_code" != "0" ]; then
+            echo "::error::db-bootstrap failed with exit code ${exit_code:-None} (stoppedReason=${stopped_reason:-none}, stopCode=${stop_code:-none}) — no migration or service update will run. Check the /ecs/qa-open-wearables-db-bootstrap log group."
+            exit 1
+          fi
 
       - name: Run migration — abort the deploy if this fails
         run: |
