@@ -627,10 +627,10 @@ resource "aws_secretsmanager_secret_version" "secret_key" {
   secret_string = random_password.secret_key.result
 }
 
-# Fernet key: 32 raw random bytes, base64-urlsafe encoded — exactly what
-# cryptography.fernet.Fernet.generate_key() produces. random_id's b64_url
-# output is that same encoding, so this is a valid Fernet key without needing
-# a Python step to generate it.
+# Fernet key: 32 raw random bytes, base64-urlsafe encoded. random_id's b64_url
+# uses that same charset but is unpadded (see the padding fix on the secret
+# version below) — with the appended "=", this matches what
+# cryptography.fernet.Fernet.generate_key() produces, without a Python step.
 resource "random_id" "master_key" {
   byte_length = 32
 }
@@ -642,7 +642,10 @@ resource "aws_secretsmanager_secret" "master_key" {
 
 resource "aws_secretsmanager_secret_version" "master_key" {
   secret_id     = aws_secretsmanager_secret.master_key.id
-  secret_string = random_id.master_key.b64_url
+  # b64_url is unpadded RawURLEncoding (43 chars for 32 bytes) — Fernet requires
+  # the padded 44-char form. Confirmed against the random provider's source
+  # (base64.RawURLEncoding), not assumed.
+  secret_string = "${random_id.master_key.b64_url}="
 }
 
 resource "random_password" "admin_password" {
@@ -720,7 +723,7 @@ print('valid Fernet key')
 "
 ```
 
-Si esto falla, el problema es el padding de base64: Fernet exige exactamente 44 caracteres terminados en `=`. `random_id.b64_url` puede no incluir el padding — si falla, cambiar `secret_string` a `"${random_id.master_key.b64_url}="` y re-aplicar sólo ese secreto (`terraform apply -target=aws_secretsmanager_secret_version.master_key`).
+El código ya agrega el padding (`"${random_id.master_key.b64_url}="`) — `b64_url` por sí solo es unpadded RawURLEncoding (43 caracteres para 32 bytes) y Fernet exige exactamente 44 terminados en `=`, confirmado contra el código fuente del provider `hashicorp/random`, no supuesto. Este paso confirma que el valor real en Secrets Manager es un Fernet key válido, no diagnostica un problema esperado.
 
 Este paso requiere que Task 4 ya esté aplicada (`apply`, no sólo `plan`) — no lo puede correr el implementador de esta task en modo aislado; queda para el controller verificar después de que el PR aplique, o para quien ejecute el `apply` real. Anotar en el reporte que este paso quedó pendiente de verificación post-apply.
 
