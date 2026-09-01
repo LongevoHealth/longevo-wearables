@@ -1,0 +1,199 @@
+name: Deploy to ECS (qa)
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-qa
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-west-2
+  CLUSTER: qa-open-wearables
+  BACKEND_ECR: qa-open-wearables-backend
+  FRONTEND_ECR: qa-open-wearables-frontend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: qa-open-wearables
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr-login
+
+      - name: Resolve image URIs
+        id: images
+        run: |
+          echo "backend=${{ steps.ecr-login.outputs.registry }}/${{ env.BACKEND_ECR }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "frontend=${{ steps.ecr-login.outputs.registry }}/${{ env.FRONTEND_ECR }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push backend image
+        run: |
+          docker build \
+            --build-arg GIT_SHA=${{ github.sha }} \
+            -t ${{ steps.images.outputs.backend }} \
+            backend
+          docker push ${{ steps.images.outputs.backend }}
+
+      - name: Build and push frontend image
+        run: |
+          docker build \
+            --build-arg VITE_API_URL=https://wearables-api-qa.longevo.com \
+            -t ${{ steps.images.outputs.frontend }} \
+            frontend
+          docker push ${{ steps.images.outputs.frontend }}
+
+      - name: Register migration task definition with the new image
+        id: migration-td
+        run: |
+          arn=$(.github/scripts/register-task-def-with-image.sh qa-open-wearables-migration "${{ steps.images.outputs.backend }}")
+          echo "arn=$arn" >> "$GITHUB_OUTPUT"
+
+      - name: Register db-bootstrap task definition with the new image
+        id: db-bootstrap-td
+        run: |
+          arn=$(.github/scripts/register-task-def-with-image.sh qa-open-wearables-db-bootstrap "${{ steps.images.outputs.backend }}" '["python", "scripts/bootstrap_db_roles.py"]')
+          echo "arn=$arn" >> "$GITHUB_OUTPUT"
+
+      - name: Get private subnets and task security groups
+        id: network
+        run: |
+          # Private subnets are tagged Name = "qa-open-wearables-private-<az>"
+          # by the platform plan's network.tf — filtering by that tag avoids
+          # having to resolve the VPC ID first (describe-clusters doesn't
+          # return one; it would need a second round trip through the ENI or
+          # the service's network configuration).
+          subnets=$(aws ec2 describe-subnets \
+            --filters "Name=tag:Name,Values=${{ env.CLUSTER }}-private-*" \
+            --query 'Subnets[].SubnetId' --output text | tr '\t' ',')
+          sg=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${{ env.CLUSTER }}-migration" \
+            --query 'SecurityGroups[0].GroupId' --output text)
+          bootstrap_sg=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${{ env.CLUSTER }}-db-bootstrap" \
+            --query 'SecurityGroups[0].GroupId' --output text)
+          if [ -z "$subnets" ]; then
+            echo "::error::No private subnets matched tag Name=${CLUSTER}-private-*. Cannot run the migration or db-bootstrap task."
+            exit 1
+          fi
+          if [ -z "$sg" ] || [ "$sg" = "None" ]; then
+            echo "::error::No security group matched group-name=${CLUSTER}-migration (got ${sg:-empty}). Cannot run the migration task."
+            exit 1
+          fi
+          if [ -z "$bootstrap_sg" ] || [ "$bootstrap_sg" = "None" ]; then
+            echo "::error::No security group matched group-name=${CLUSTER}-db-bootstrap (got ${bootstrap_sg:-empty}). Cannot run the db-bootstrap task."
+            exit 1
+          fi
+          echo "subnets=$subnets" >> "$GITHUB_OUTPUT"
+          echo "sg=$sg" >> "$GITHUB_OUTPUT"
+          echo "bootstrap_sg=$bootstrap_sg" >> "$GITHUB_OUTPUT"
+
+      - name: Run db-bootstrap — abort the deploy if this fails
+        run: |
+          run_task_json=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition "${{ steps.db-bootstrap-td.outputs.arn }}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ steps.network.outputs.subnets }}],securityGroups=[${{ steps.network.outputs.bootstrap_sg }}],assignPublicIp=DISABLED}")
+          task_arn=$(jq -r '.tasks[0].taskArn // empty' <<< "$run_task_json")
+          failures=$(jq -c '.failures // []' <<< "$run_task_json")
+          if [ -z "$task_arn" ] || [ "$task_arn" = "None" ] || [ "$task_arn" = "null" ]; then
+            echo "::error::db-bootstrap run-task did not start a task (no task ARN). failures=${failures}"
+            echo "$run_task_json"
+            exit 1
+          fi
+          echo "db-bootstrap task: $task_arn"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task_arn"
+          task_desc=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task_arn")
+          exit_code=$(jq -r '.tasks[0].containers[0].exitCode // empty' <<< "$task_desc")
+          stopped_reason=$(jq -r '.tasks[0].stoppedReason // empty' <<< "$task_desc")
+          stop_code=$(jq -r '.tasks[0].stopCode // empty' <<< "$task_desc")
+          if [ "$exit_code" != "0" ]; then
+            echo "::error::db-bootstrap failed with exit code ${exit_code:-None} (stoppedReason=${stopped_reason:-none}, stopCode=${stop_code:-none}) — no migration or service update will run. Check the /ecs/qa-open-wearables-db-bootstrap log group."
+            exit 1
+          fi
+
+      - name: Run migration — abort the deploy if this fails
+        run: |
+          run_task_json=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition "${{ steps.migration-td.outputs.arn }}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ steps.network.outputs.subnets }}],securityGroups=[${{ steps.network.outputs.sg }}],assignPublicIp=DISABLED}")
+          task_arn=$(jq -r '.tasks[0].taskArn // empty' <<< "$run_task_json")
+          failures=$(jq -c '.failures // []' <<< "$run_task_json")
+          if [ -z "$task_arn" ] || [ "$task_arn" = "None" ] || [ "$task_arn" = "null" ]; then
+            echo "::error::Migration run-task did not start a task (no task ARN). failures=${failures}"
+            echo "$run_task_json"
+            exit 1
+          fi
+          echo "Migration task: $task_arn"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task_arn"
+          task_desc=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task_arn")
+          exit_code=$(jq -r '.tasks[0].containers[0].exitCode // empty' <<< "$task_desc")
+          stopped_reason=$(jq -r '.tasks[0].stoppedReason // empty' <<< "$task_desc")
+          stop_code=$(jq -r '.tasks[0].stopCode // empty' <<< "$task_desc")
+          if [ "$exit_code" != "0" ]; then
+            echo "::error::Migration failed with exit code ${exit_code:-None} (stoppedReason=${stopped_reason:-none}, stopCode=${stop_code:-none}) — no service will be updated. Check the /ecs/qa-open-wearables-migration log group."
+            exit 1
+          fi
+
+      - name: Register and deploy api, frontend, celery-worker, celery-worker-bulk
+        run: |
+          declare -A families=(
+            [api]="qa-open-wearables-api:${{ steps.images.outputs.backend }}"
+            [frontend]="qa-open-wearables-frontend:${{ steps.images.outputs.frontend }}"
+            [celery-worker]="qa-open-wearables-celery-worker:${{ steps.images.outputs.backend }}"
+            [celery-worker-bulk]="qa-open-wearables-celery-worker-bulk:${{ steps.images.outputs.backend }}"
+          )
+          declare -A registered=()
+          for service in "${!families[@]}"; do
+            family="${families[$service]%%:*}"
+            image="${families[$service]#*:}"
+            td_arn=$(.github/scripts/register-task-def-with-image.sh "$family" "$image")
+            registered[$family]="$td_arn"
+            echo "Deploying $service with $td_arn"
+            aws ecs update-service --cluster "$CLUSTER" --service "$family" --task-definition "$td_arn" > /dev/null
+          done
+          aws ecs wait services-stable --cluster "$CLUSTER" \
+            --services qa-open-wearables-api qa-open-wearables-frontend qa-open-wearables-celery-worker qa-open-wearables-celery-worker-bulk
+          for family in "${!registered[@]}"; do
+            expected="${registered[$family]}"
+            desc=$(aws ecs describe-services --cluster "$CLUSTER" --services "$family" \
+              --query 'services[0].deployments[?status==`PRIMARY`] | [0]')
+            actual_td=$(jq -r '.taskDefinition // empty' <<< "$desc")
+            rollout=$(jq -r '.rolloutState // empty' <<< "$desc")
+            if [ "$rollout" = "FAILED" ] || [ "$actual_td" != "$expected" ]; then
+              echo "::error::$family did not stabilize on the registered task definition (expected $expected, PRIMARY=${actual_td:-None}, rolloutState=${rollout:-None}). Circuit-breaker rollback likely."
+              exit 1
+            fi
+          done
+
+      - name: Register and deploy celery-beat (last, on its own)
+        run: |
+          td_arn=$(.github/scripts/register-task-def-with-image.sh qa-open-wearables-celery-beat "${{ steps.images.outputs.backend }}")
+          aws ecs update-service --cluster "$CLUSTER" --service qa-open-wearables-celery-beat --task-definition "$td_arn" > /dev/null
+          aws ecs wait services-stable --cluster "$CLUSTER" --services qa-open-wearables-celery-beat
+          desc=$(aws ecs describe-services --cluster "$CLUSTER" --services qa-open-wearables-celery-beat \
+            --query 'services[0].deployments[?status==`PRIMARY`] | [0]')
+          actual_td=$(jq -r '.taskDefinition // empty' <<< "$desc")
+          rollout=$(jq -r '.rolloutState // empty' <<< "$desc")
+          if [ "$rollout" = "FAILED" ] || [ "$actual_td" != "$td_arn" ]; then
+            echo "::error::qa-open-wearables-celery-beat did not stabilize on the registered task definition (expected $td_arn, PRIMARY=${actual_td:-None}, rolloutState=${rollout:-None}). Circuit-breaker rollback likely."
+            exit 1
+          fi
