@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: deploy-qa
+  cancel-in-progress: false
+
 permissions:
   id-token: write
   contents: read
@@ -18,6 +22,9 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: qa-open-wearables
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -71,22 +78,39 @@ jobs:
           sg=$(aws ec2 describe-security-groups \
             --filters "Name=group-name,Values=${{ env.CLUSTER }}-migration" \
             --query 'SecurityGroups[0].GroupId' --output text)
+          if [ -z "$subnets" ]; then
+            echo "::error::No private subnets matched tag Name=${CLUSTER}-private-*. Cannot run the migration task."
+            exit 1
+          fi
+          if [ -z "$sg" ] || [ "$sg" = "None" ]; then
+            echo "::error::No security group matched group-name=${CLUSTER}-migration (got ${sg:-empty}). Cannot run the migration task."
+            exit 1
+          fi
           echo "subnets=$subnets" >> "$GITHUB_OUTPUT"
           echo "sg=$sg" >> "$GITHUB_OUTPUT"
 
       - name: Run migration — abort the deploy if this fails
         run: |
-          task_arn=$(aws ecs run-task \
+          run_task_json=$(aws ecs run-task \
             --cluster "$CLUSTER" \
             --task-definition "${{ steps.migration-td.outputs.arn }}" \
             --launch-type FARGATE \
-            --network-configuration "awsvpcConfiguration={subnets=[${{ steps.network.outputs.subnets }}],securityGroups=[${{ steps.network.outputs.sg }}],assignPublicIp=DISABLED}" \
-            --query 'tasks[0].taskArn' --output text)
+            --network-configuration "awsvpcConfiguration={subnets=[${{ steps.network.outputs.subnets }}],securityGroups=[${{ steps.network.outputs.sg }}],assignPublicIp=DISABLED}")
+          task_arn=$(jq -r '.tasks[0].taskArn // empty' <<< "$run_task_json")
+          failures=$(jq -c '.failures // []' <<< "$run_task_json")
+          if [ -z "$task_arn" ] || [ "$task_arn" = "None" ] || [ "$task_arn" = "null" ]; then
+            echo "::error::Migration run-task did not start a task (no task ARN). failures=${failures}"
+            echo "$run_task_json"
+            exit 1
+          fi
           echo "Migration task: $task_arn"
           aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task_arn"
-          exit_code=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task_arn" --query 'tasks[0].containers[0].exitCode' --output text)
+          task_desc=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task_arn")
+          exit_code=$(jq -r '.tasks[0].containers[0].exitCode // empty' <<< "$task_desc")
+          stopped_reason=$(jq -r '.tasks[0].stoppedReason // empty' <<< "$task_desc")
+          stop_code=$(jq -r '.tasks[0].stopCode // empty' <<< "$task_desc")
           if [ "$exit_code" != "0" ]; then
-            echo "::error::Migration failed with exit code $exit_code — no service will be updated. Check the /ecs/qa-open-wearables-migration log group."
+            echo "::error::Migration failed with exit code ${exit_code:-None} (stoppedReason=${stopped_reason:-none}, stopCode=${stop_code:-none}) — no service will be updated. Check the /ecs/qa-open-wearables-migration log group."
             exit 1
           fi
 
@@ -98,18 +122,39 @@ jobs:
             [celery-worker]="qa-open-wearables-celery-worker:${{ steps.images.outputs.backend }}"
             [celery-worker-bulk]="qa-open-wearables-celery-worker-bulk:${{ steps.images.outputs.backend }}"
           )
+          declare -A registered=()
           for service in "${!families[@]}"; do
             family="${families[$service]%%:*}"
             image="${families[$service]#*:}"
             td_arn=$(.github/scripts/register-task-def-with-image.sh "$family" "$image")
+            registered[$family]="$td_arn"
             echo "Deploying $service with $td_arn"
             aws ecs update-service --cluster "$CLUSTER" --service "$family" --task-definition "$td_arn" > /dev/null
           done
           aws ecs wait services-stable --cluster "$CLUSTER" \
             --services qa-open-wearables-api qa-open-wearables-frontend qa-open-wearables-celery-worker qa-open-wearables-celery-worker-bulk
+          for family in "${!registered[@]}"; do
+            expected="${registered[$family]}"
+            desc=$(aws ecs describe-services --cluster "$CLUSTER" --services "$family" \
+              --query 'services[0].deployments[?status==`PRIMARY`] | [0]')
+            actual_td=$(jq -r '.taskDefinition // empty' <<< "$desc")
+            rollout=$(jq -r '.rolloutState // empty' <<< "$desc")
+            if [ "$rollout" = "FAILED" ] || [ "$actual_td" != "$expected" ]; then
+              echo "::error::$family did not stabilize on the registered task definition (expected $expected, PRIMARY=${actual_td:-None}, rolloutState=${rollout:-None}). Circuit-breaker rollback likely."
+              exit 1
+            fi
+          done
 
       - name: Register and deploy celery-beat (last, on its own)
         run: |
           td_arn=$(.github/scripts/register-task-def-with-image.sh qa-open-wearables-celery-beat "${{ steps.images.outputs.backend }}")
           aws ecs update-service --cluster "$CLUSTER" --service qa-open-wearables-celery-beat --task-definition "$td_arn" > /dev/null
           aws ecs wait services-stable --cluster "$CLUSTER" --services qa-open-wearables-celery-beat
+          desc=$(aws ecs describe-services --cluster "$CLUSTER" --services qa-open-wearables-celery-beat \
+            --query 'services[0].deployments[?status==`PRIMARY`] | [0]')
+          actual_td=$(jq -r '.taskDefinition // empty' <<< "$desc")
+          rollout=$(jq -r '.rolloutState // empty' <<< "$desc")
+          if [ "$rollout" = "FAILED" ] || [ "$actual_td" != "$td_arn" ]; then
+            echo "::error::qa-open-wearables-celery-beat did not stabilize on the registered task definition (expected $td_arn, PRIMARY=${actual_td:-None}, rolloutState=${rollout:-None}). Circuit-breaker rollback likely."
+            exit 1
+          fi
