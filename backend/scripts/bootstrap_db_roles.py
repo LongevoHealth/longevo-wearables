@@ -67,8 +67,7 @@ def bootstrap() -> None:
             "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app"
         )
         cur.execute(
-            "ALTER DEFAULT PRIVILEGES FOR ROLE migrator IN SCHEMA public "
-            "GRANT USAGE, SELECT ON SEQUENCES TO app"
+            "ALTER DEFAULT PRIVILEGES FOR ROLE migrator IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO app"
         )
 
     logger.info("Database roles and grants are up to date.")
