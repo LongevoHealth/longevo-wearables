@@ -1,0 +1,115 @@
+name: Deploy to ECS (qa)
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-west-2
+  CLUSTER: qa-open-wearables
+  BACKEND_ECR: qa-open-wearables-backend
+  FRONTEND_ECR: qa-open-wearables-frontend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: qa-open-wearables
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr-login
+
+      - name: Resolve image URIs
+        id: images
+        run: |
+          echo "backend=${{ steps.ecr-login.outputs.registry }}/${{ env.BACKEND_ECR }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "frontend=${{ steps.ecr-login.outputs.registry }}/${{ env.FRONTEND_ECR }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push backend image
+        run: |
+          docker build \
+            --build-arg GIT_SHA=${{ github.sha }} \
+            -t ${{ steps.images.outputs.backend }} \
+            backend
+          docker push ${{ steps.images.outputs.backend }}
+
+      - name: Build and push frontend image
+        run: |
+          docker build \
+            --build-arg VITE_API_URL=https://wearables-api-qa.longevo.com \
+            -t ${{ steps.images.outputs.frontend }} \
+            frontend
+          docker push ${{ steps.images.outputs.frontend }}
+
+      - name: Register migration task definition with the new image
+        id: migration-td
+        run: |
+          arn=$(.github/scripts/register-task-def-with-image.sh qa-open-wearables-migration "${{ steps.images.outputs.backend }}")
+          echo "arn=$arn" >> "$GITHUB_OUTPUT"
+
+      - name: Get private subnets and migration security group
+        id: network
+        run: |
+          # Private subnets are tagged Name = "qa-open-wearables-private-<az>"
+          # by the platform plan's network.tf — filtering by that tag avoids
+          # having to resolve the VPC ID first (describe-clusters doesn't
+          # return one; it would need a second round trip through the ENI or
+          # the service's network configuration).
+          subnets=$(aws ec2 describe-subnets \
+            --filters "Name=tag:Name,Values=${{ env.CLUSTER }}-private-*" \
+            --query 'Subnets[].SubnetId' --output text | tr '\t' ',')
+          sg=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=${{ env.CLUSTER }}-migration" \
+            --query 'SecurityGroups[0].GroupId' --output text)
+          echo "subnets=$subnets" >> "$GITHUB_OUTPUT"
+          echo "sg=$sg" >> "$GITHUB_OUTPUT"
+
+      - name: Run migration — abort the deploy if this fails
+        run: |
+          task_arn=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition "${{ steps.migration-td.outputs.arn }}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ steps.network.outputs.subnets }}],securityGroups=[${{ steps.network.outputs.sg }}],assignPublicIp=DISABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "Migration task: $task_arn"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task_arn"
+          exit_code=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task_arn" --query 'tasks[0].containers[0].exitCode' --output text)
+          if [ "$exit_code" != "0" ]; then
+            echo "::error::Migration failed with exit code $exit_code — no service will be updated. Check the /ecs/qa-open-wearables-migration log group."
+            exit 1
+          fi
+
+      - name: Register and deploy api, frontend, celery-worker, celery-worker-bulk
+        run: |
+          declare -A families=(
+            [api]="qa-open-wearables-api:${{ steps.images.outputs.backend }}"
+            [frontend]="qa-open-wearables-frontend:${{ steps.images.outputs.frontend }}"
+            [celery-worker]="qa-open-wearables-celery-worker:${{ steps.images.outputs.backend }}"
+            [celery-worker-bulk]="qa-open-wearables-celery-worker-bulk:${{ steps.images.outputs.backend }}"
+          )
+          for service in "${!families[@]}"; do
+            family="${families[$service]%%:*}"
+            image="${families[$service]#*:}"
+            td_arn=$(.github/scripts/register-task-def-with-image.sh "$family" "$image")
+            echo "Deploying $service with $td_arn"
+            aws ecs update-service --cluster "$CLUSTER" --service "$family" --task-definition "$td_arn" > /dev/null
+          done
+          aws ecs wait services-stable --cluster "$CLUSTER" \
+            --services qa-open-wearables-api qa-open-wearables-frontend qa-open-wearables-celery-worker qa-open-wearables-celery-worker-bulk
+
+      - name: Register and deploy celery-beat (last, on its own)
+        run: |
+          td_arn=$(.github/scripts/register-task-def-with-image.sh qa-open-wearables-celery-beat "${{ steps.images.outputs.backend }}")
+          aws ecs update-service --cluster "$CLUSTER" --service qa-open-wearables-celery-beat --task-definition "$td_arn" > /dev/null
+          aws ecs wait services-stable --cluster "$CLUSTER" --services qa-open-wearables-celery-beat
