@@ -222,7 +222,13 @@ resource "aws_security_group" "this" {
 }
 
 resource "aws_security_group_rule" "ingress" {
-  for_each = toset(var.ingress_security_group_ids)
+  # Keyed by index, not by the security group ID itself: for api/frontend this
+  # list holds aws_security_group.alb.id, created in this same plan, so its
+  # value is unknown until apply. for_each needs statically-known keys — the
+  # list's length is known even when an element's value isn't, so indexing
+  # into it (rather than toset()-ing the values) is what Terraform's own
+  # "Invalid for_each argument" error recommends.
+  for_each = { for idx, sg_id in var.ingress_security_group_ids : idx => sg_id }
 
   type                     = "ingress"
   from_port                = var.container_port
@@ -398,6 +404,8 @@ terraform init -backend=false && terraform validate
 ```
 
 Expected: `Success! The configuration is valid.` Borrar `/tmp/service-module-check` después.
+
+**Nota de una brecha real de este check, encontrada en la ejecución:** pasar un valor estático (`ingress_security_group_ids = ["sg-00000000"]`) no habría detectado el bug de `for_each = toset(var.ingress_security_group_ids)`, que sólo aparece cuando el caller real pasa el ID de un recurso creado en el mismo plan (`aws_security_group.alb.id`, sin aplicar todavía — "unknown" hasta el apply). `toset()` sobre una lista con un valor unknown rompe el `for_each`. El fix real, ya en el código de arriba, es indexar por posición (`{ for idx, sg_id in var.ingress_security_group_ids : idx => sg_id }`) en vez de por valor — la longitud de la lista se conoce en plan-time aunque el contenido no. Si se escribe un módulo similar en el plan de prod, este check aislado necesitaría un caller que pase una referencia real a un recurso sin aplicar, no un string literal, para exercitar esta ruta.
 
 - [ ] **Step 6: Commit**
 
