@@ -79,7 +79,24 @@ jobs:
       - name: Register db-bootstrap task definition with the new image
         id: db-bootstrap-td
         run: |
-          arn=$(.github/scripts/register-task-def-with-image.sh qa-open-wearables-db-bootstrap "${{ steps.images.outputs.backend }}" '["python", "scripts/bootstrap_db_roles.py"]' '[{"name": "DB_NAME", "value": "open_wearables"}]')
+          # The RDS-managed master secret holds only username/password, so the
+          # task needs DB_HOST from somewhere else — and Terraform's
+          # ignore_changes freezes an already-registered family's environment,
+          # so it has to be re-supplied here on every deploy. Resolved from the
+          # cluster rather than hardcoded, same as the subnet/SG lookups below.
+          db_host=$(aws rds describe-db-clusters \
+            --db-cluster-identifier "${CLUSTER}-aurora" \
+            --query 'DBClusters[0].Endpoint' --output text)
+          if [ -z "$db_host" ] || [ "$db_host" = "None" ]; then
+            echo "::error::Could not resolve the Aurora endpoint for ${CLUSTER}-aurora (got ${db_host:-empty}). Cannot run the db-bootstrap task."
+            exit 1
+          fi
+          environment=$(jq -nc --arg host "$db_host" '[
+            {name: "DB_HOST", value: $host},
+            {name: "DB_PORT", value: "5432"},
+            {name: "DB_NAME", value: "open_wearables"}
+          ]')
+          arn=$(.github/scripts/register-task-def-with-image.sh qa-open-wearables-db-bootstrap "${{ steps.images.outputs.backend }}" '["python", "scripts/bootstrap_db_roles.py"]' "$environment")
           echo "arn=$arn" >> "$GITHUB_OUTPUT"
 
       - name: Get private subnets and task security groups
