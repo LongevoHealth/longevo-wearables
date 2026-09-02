@@ -17,6 +17,7 @@ class TestAccessLogLevelDerivation:
         [
             (EnvironmentType.PRODUCTION, AccessLogLevel.ERRORS),
             (EnvironmentType.STAGING, AccessLogLevel.ALL),
+            (EnvironmentType.QA, AccessLogLevel.ALL),
             (EnvironmentType.LOCAL, AccessLogLevel.ALL),
             (EnvironmentType.TEST, AccessLogLevel.ALL),
         ],

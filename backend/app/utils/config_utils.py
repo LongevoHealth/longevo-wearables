@@ -42,6 +42,7 @@ def format_duration(value: timedelta) -> str:
 class EnvironmentType(str, Enum):
     LOCAL = "local"
     TEST = "test"
+    QA = "qa"
     STAGING = "staging"
     PRODUCTION = "production"
 
