@@ -67,6 +67,15 @@ def bootstrap() -> None:
         cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO app").format(sql.Identifier(db_name)))
         cur.execute("GRANT CREATE, USAGE ON SCHEMA public TO migrator")
         cur.execute("GRANT USAGE ON SCHEMA public TO app")
+
+        # ALTER DEFAULT PRIVILEGES FOR ROLE migrator requires membership in
+        # migrator, and creating a role does not make you a member of it. The
+        # RDS master user is not a real superuser (only an rds_superuser
+        # member), so without this the next two statements fail with
+        # "permission denied to change default privileges". Re-granting an
+        # existing membership is a no-op NOTICE, so this stays idempotent.
+        cur.execute("GRANT migrator TO CURRENT_USER")
+
         cur.execute(
             "ALTER DEFAULT PRIVILEGES FOR ROLE migrator IN SCHEMA public "
             "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app"
