@@ -81,11 +81,51 @@ if [ "$env_value" != '[{"name":"ENVIRONMENT","value":"qa"}]' ]; then
   exit 1
 fi
 
-# --- test: an environment argument fully replaces the existing environment ---
-result_env_override=$(echo "$FIXTURE_WITH_COMMAND" | jq '.taskDefinition' | patch_image "111111111111.dkr.ecr.us-west-2.amazonaws.com/backend:abc123" "" '[{"name": "DB_NAME", "value": "open_wearables"}]')
-env_value=$(echo "$result_env_override" | jq -c '.containerDefinitions[0].environment')
+# --- test: an env upsert ADDS a new variable and keeps the existing ones ---
+# This is the whole point of upserting rather than replacing: a family's
+# registered environment holds endpoints Terraform resolved at apply time, and
+# the pipeline must not drop them by supplying a partial list.
+result_add=$(echo "$FIXTURE_WITH_COMMAND" | jq '.taskDefinition' | patch_image "img:1" "" '[{"name": "CORS_ORIGINS", "value": "[\"https://app.example.com\"]"}]')
+env_names=$(echo "$result_add" | jq -c '[.containerDefinitions[0].environment[].name] | sort')
+if [ "$env_names" != '["CORS_ORIGINS","ENVIRONMENT"]' ]; then
+  echo "FAIL: upsert should add CORS_ORIGINS and keep ENVIRONMENT, got: $env_names"
+  exit 1
+fi
+kept=$(echo "$result_add" | jq -r '.containerDefinitions[0].environment[] | select(.name=="ENVIRONMENT") | .value')
+if [ "$kept" != "qa" ]; then
+  echo "FAIL: pre-existing ENVIRONMENT value was not preserved, got: $kept"
+  exit 1
+fi
+
+# --- test: an env upsert OVERWRITES a variable that is already present, once ---
+FIXTURE_MULTI=$(echo "$FIXTURE" | jq '.taskDefinition.containerDefinitions[0].environment = [
+  {"name":"ENVIRONMENT","value":"qa"},
+  {"name":"DB_HOST","value":"aurora.internal"},
+  {"name":"CORS_ORIGINS","value":"[]"}
+]')
+result_over=$(echo "$FIXTURE_MULTI" | jq '.taskDefinition' | patch_image "img:1" "" '[{"name": "CORS_ORIGINS", "value": "[\"https://new.example.com\"]"}]')
+occurrences=$(echo "$result_over" | jq '[.containerDefinitions[0].environment[] | select(.name=="CORS_ORIGINS")] | length')
+if [ "$occurrences" != "1" ]; then
+  echo "FAIL: CORS_ORIGINS should appear exactly once after an upsert, got: $occurrences"
+  exit 1
+fi
+new_value=$(echo "$result_over" | jq -r '.containerDefinitions[0].environment[] | select(.name=="CORS_ORIGINS") | .value')
+if [ "$new_value" != '["https://new.example.com"]' ]; then
+  echo "FAIL: CORS_ORIGINS was not overwritten, got: $new_value"
+  exit 1
+fi
+db_host=$(echo "$result_over" | jq -r '.containerDefinitions[0].environment[] | select(.name=="DB_HOST") | .value')
+if [ "$db_host" != "aurora.internal" ]; then
+  echo "FAIL: a Terraform-resolved endpoint (DB_HOST) must survive an upsert, got: $db_host"
+  exit 1
+fi
+
+# --- test: an upsert onto a container with no environment at all works ---
+FIXTURE_NO_ENV=$(echo "$FIXTURE" | jq 'del(.taskDefinition.containerDefinitions[0].environment)')
+result_none=$(echo "$FIXTURE_NO_ENV" | jq '.taskDefinition' | patch_image "img:1" "" '[{"name": "DB_NAME", "value": "open_wearables"}]')
+env_value=$(echo "$result_none" | jq -c '.containerDefinitions[0].environment')
 if [ "$env_value" != '[{"name":"DB_NAME","value":"open_wearables"}]' ]; then
-  echo "FAIL: environment override did not apply, got: $env_value"
+  echo "FAIL: upsert onto a container with no environment failed, got: $env_value"
   exit 1
 fi
 
