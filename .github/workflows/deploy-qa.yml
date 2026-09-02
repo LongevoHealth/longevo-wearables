@@ -44,19 +44,31 @@ jobs:
 
       - name: Build and push backend image
         run: |
-          docker build \
-            --build-arg GIT_SHA=${{ github.sha }} \
-            -t ${{ steps.images.outputs.backend }} \
-            backend
-          docker push ${{ steps.images.outputs.backend }}
+          # Tags are immutable in both ECR repos, and re-running this job after
+          # a later step fails (e.g. db-bootstrap, migration) rebuilds the same
+          # commit SHA — skip the push if a re-run already put this exact tag
+          # there, rather than failing on "tag already exists" every time.
+          if aws ecr describe-images --repository-name "$BACKEND_ECR" --image-ids imageTag=${{ github.sha }} > /dev/null 2>&1; then
+            echo "backend:${{ github.sha }} already exists in ECR — skipping build and push."
+          else
+            docker build \
+              --build-arg GIT_SHA=${{ github.sha }} \
+              -t ${{ steps.images.outputs.backend }} \
+              backend
+            docker push ${{ steps.images.outputs.backend }}
+          fi
 
       - name: Build and push frontend image
         run: |
-          docker build \
-            --build-arg VITE_API_URL=https://wearables-api-qa.longevo.com \
-            -t ${{ steps.images.outputs.frontend }} \
-            frontend
-          docker push ${{ steps.images.outputs.frontend }}
+          if aws ecr describe-images --repository-name "$FRONTEND_ECR" --image-ids imageTag=${{ github.sha }} > /dev/null 2>&1; then
+            echo "frontend:${{ github.sha }} already exists in ECR — skipping build and push."
+          else
+            docker build \
+              --build-arg VITE_API_URL=https://wearables-api-qa.longevo.com \
+              -t ${{ steps.images.outputs.frontend }} \
+              frontend
+            docker push ${{ steps.images.outputs.frontend }}
+          fi
 
       - name: Register migration task definition with the new image
         id: migration-td
@@ -67,7 +79,7 @@ jobs:
       - name: Register db-bootstrap task definition with the new image
         id: db-bootstrap-td
         run: |
-          arn=$(.github/scripts/register-task-def-with-image.sh qa-open-wearables-db-bootstrap "${{ steps.images.outputs.backend }}" '["python", "scripts/bootstrap_db_roles.py"]')
+          arn=$(.github/scripts/register-task-def-with-image.sh qa-open-wearables-db-bootstrap "${{ steps.images.outputs.backend }}" '["python", "scripts/bootstrap_db_roles.py"]' '[{"name": "DB_NAME", "value": "open_wearables"}]')
           echo "arn=$arn" >> "$GITHUB_OUTPUT"
 
       - name: Get private subnets and task security groups
