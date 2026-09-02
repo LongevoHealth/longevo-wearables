@@ -204,14 +204,53 @@ jobs:
           # "Disallowed CORS origin" on every call from the frontend origin.
           # Upserted, not replaced, so the endpoints Terraform resolved at apply
           # time (DB_HOST, REDIS_HOST) stay exactly as registered.
+          #
+          # The provider settings ride along here for the same reason. Client ids
+          # and scopes are public by design, so they are plain variables; the
+          # redirect base has to be explicit because the app defaults it to
+          # localhost.
+          provider_env='[
+            {"name": "API_BASE_URL", "value": "https://wearables-api-qa.longevo.com"},
+            {"name": "WHOOP_CLIENT_ID", "value": "14ba7221-a87f-4cfc-8112-6d27e7e46fc1"},
+            {"name": "WHOOP_DEFAULT_SCOPE", "value": "offline read:cycles read:sleep read:recovery read:workout read:body_measurement read:profile"},
+            {"name": "OURA_CLIENT_ID", "value": "8590d089-f2b5-4f87-a64b-a8c40191e19c"},
+            {"name": "OURA_DEFAULT_SCOPE", "value": "personal daily activity heartrate workout session spo2 ring_configuration heart_health"},
+            {"name": "STRAVA_CLIENT_ID", "value": "275259"},
+            {"name": "STRAVA_DEFAULT_SCOPE", "value": "activity:read_all,profile:read_all"}
+          ]'
           declare -A service_env=(
-            [api]='[{"name": "CORS_ORIGINS", "value": "[\"https://wearables-app-qa.longevo.com\"]"}]'
+            [api]="$(jq -c --argjson p "$provider_env" '$p + [{name: "CORS_ORIGINS", value: "[\"https://wearables-app-qa.longevo.com\"]"}]' <<< '{}')"
+            [celery-worker]="$(jq -c <<< "$provider_env")"
           )
+
+          # Secret ARNs carry a random suffix, so they are looked up rather than
+          # built from the name. Only the pointer travels through here — ECS
+          # resolves the value at task start with the execution role.
+          secret_arn () {
+            aws secretsmanager describe-secret --secret-id "$1" --query 'ARN' --output text
+          }
+          provider_secrets=$(jq -nc \
+            --arg whoop "$(secret_arn qa-open-wearables-whoop-client-secret)" \
+            --arg oura "$(secret_arn qa-open-wearables-oura-client-secret)" \
+            --arg oura_wh "$(secret_arn qa-open-wearables-oura-webhook-verification-token)" \
+            --arg strava "$(secret_arn qa-open-wearables-strava-client-secret)" \
+            --arg strava_wh "$(secret_arn qa-open-wearables-strava-webhook-verify-token)" '[
+              {name: "WHOOP_CLIENT_SECRET", valueFrom: $whoop},
+              {name: "OURA_CLIENT_SECRET", valueFrom: $oura},
+              {name: "OURA_WEBHOOK_VERIFICATION_TOKEN", valueFrom: $oura_wh},
+              {name: "STRAVA_CLIENT_SECRET", valueFrom: $strava},
+              {name: "STRAVA_WEBHOOK_VERIFY_TOKEN", valueFrom: $strava_wh}
+            ]')
+          declare -A service_secrets=(
+            [api]="$provider_secrets"
+            [celery-worker]="$provider_secrets"
+          )
+
           declare -A registered=()
           for service in "${!families[@]}"; do
             family="${families[$service]%%:*}"
             image="${families[$service]#*:}"
-            td_arn=$(.github/scripts/register-task-def-with-image.sh "$family" "$image" "${service_commands[$service]:-}" "${service_env[$service]:-}")
+            td_arn=$(.github/scripts/register-task-def-with-image.sh "$family" "$image" "${service_commands[$service]:-}" "${service_env[$service]:-}" "${service_secrets[$service]:-}")
             registered[$family]="$td_arn"
             echo "Deploying $service with $td_arn"
             aws ecs update-service --cluster "$CLUSTER" --service "$family" --task-definition "$td_arn" > /dev/null
