@@ -73,4 +73,20 @@ if [ "$command_value" != '["python","scripts/bootstrap_db_roles.py"]' ]; then
   exit 1
 fi
 
+# --- test: no environment argument leaves the existing environment untouched ---
+result_no_env_override=$(echo "$FIXTURE_WITH_COMMAND" | jq '.taskDefinition' | patch_image "111111111111.dkr.ecr.us-west-2.amazonaws.com/backend:abc123")
+env_value=$(echo "$result_no_env_override" | jq -c '.containerDefinitions[0].environment')
+if [ "$env_value" != '[{"name":"ENVIRONMENT","value":"qa"}]' ]; then
+  echo "FAIL: environment should be untouched without an override, got: $env_value"
+  exit 1
+fi
+
+# --- test: an environment argument fully replaces the existing environment ---
+result_env_override=$(echo "$FIXTURE_WITH_COMMAND" | jq '.taskDefinition' | patch_image "111111111111.dkr.ecr.us-west-2.amazonaws.com/backend:abc123" "" '[{"name": "DB_NAME", "value": "open_wearables"}]')
+env_value=$(echo "$result_env_override" | jq -c '.containerDefinitions[0].environment')
+if [ "$env_value" != '[{"name":"DB_NAME","value":"open_wearables"}]' ]; then
+  echo "FAIL: environment override did not apply, got: $env_value"
+  exit 1
+fi
+
 echo "All tests passed"
