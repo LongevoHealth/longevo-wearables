@@ -190,11 +190,20 @@ jobs:
             [celery-worker]="qa-open-wearables-celery-worker:${{ steps.images.outputs.backend }}"
             [celery-worker-bulk]="qa-open-wearables-celery-worker-bulk:${{ steps.images.outputs.backend }}"
           )
+          # The backend image carries no CMD — every family that runs it must be
+          # told what to start. api was registered without one, so its container
+          # had nothing to run and exited 0 on every rollout; ignore_changes
+          # keeps Terraform from repairing an already-registered family, so the
+          # command is re-supplied here. frontend's image has its own CMD, and
+          # the celery families already carry theirs.
+          declare -A service_commands=(
+            [api]='["bash", "scripts/start/api.sh"]'
+          )
           declare -A registered=()
           for service in "${!families[@]}"; do
             family="${families[$service]%%:*}"
             image="${families[$service]#*:}"
-            td_arn=$(.github/scripts/register-task-def-with-image.sh "$family" "$image")
+            td_arn=$(.github/scripts/register-task-def-with-image.sh "$family" "$image" "${service_commands[$service]:-}")
             registered[$family]="$td_arn"
             echo "Deploying $service with $td_arn"
             aws ecs update-service --cluster "$CLUSTER" --service "$family" --task-definition "$td_arn" > /dev/null
