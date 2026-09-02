@@ -14,6 +14,11 @@ Passwords are never interpolated into SQL text: psycopg.sql.Literal escapes
 and quotes them, since PostgreSQL's CREATE/ALTER ROLE grammar requires a
 string-constant token in the PASSWORD clause and cannot bind a query
 parameter there.
+
+MASTER_DSN_JSON is the RDS-managed master secret, which holds ONLY
+{"username": ..., "password": ...} — no host, port, or dbname. Those come
+from the task definition's own environment, the same way every application
+service gets them.
 """
 
 import json
@@ -29,8 +34,8 @@ logger = logging.getLogger(__name__)
 def _connect_as_master(db_name: str) -> psycopg.Connection:
     master = json.loads(os.environ["MASTER_DSN_JSON"])
     dsn = (
-        f"host={master['host']} "
-        f"port={master.get('port', 5432)} "
+        f"host={os.environ['DB_HOST']} "
+        f"port={os.environ.get('DB_PORT', '5432')} "
         f"dbname={db_name} "
         f"user={master['username']} "
         f"password={master['password']} "
