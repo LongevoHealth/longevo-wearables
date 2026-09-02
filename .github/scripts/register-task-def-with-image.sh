@@ -7,32 +7,43 @@ set -euo pipefail
 # `lifecycle { ignore_changes = [container_definitions] }` — this script is
 # what supplies the real one on every deploy.
 #
-# Usage: register-task-def-with-image.sh <family> <image-uri> [command-json-array] [environment-json-array]
+# Usage: register-task-def-with-image.sh <family> <image-uri> [command-json-array] [env-upsert-json-array]
 # The optional third argument overrides containerDefinitions[0].command — for
 # families where Terraform's initial command is a placeholder that must be
 # replaced too (e.g. db-bootstrap, which runs the same backend image as api
 # but invokes a one-off script rather than the server). Omit it to leave the
 # already-registered command untouched, which is what every other family wants.
-# The optional fourth argument fully replaces containerDefinitions[0].environment
-# — needed for the same reason: Terraform's `ignore_changes = [container_definitions]`
-# means a variable added to a family's .tf environment block after its first
-# registration never reaches the real task definition on its own. Omit it to
-# leave the already-registered environment untouched.
+# The optional fourth argument upserts entries into
+# containerDefinitions[0].environment, matching on `name`: listed variables are
+# added or overwritten, and every other already-registered variable is left
+# alone. Needed for the same reason as the command: Terraform's
+# `ignore_changes = [container_definitions]` means a variable added to a
+# family's .tf environment block after its first registration never reaches the
+# real task definition on its own. It upserts rather than replaces because a
+# family's registered environment holds values Terraform resolved at apply time
+# (Aurora and Valkey endpoints), which the pipeline has no business restating —
+# dropping them by supplying a partial list would break the container.
 # Prints the new task definition ARN to stdout on success.
 
 # patch_image reads a task definition JSON object from stdin, replaces the
-# first container's image (and, optionally, its command and/or environment),
-# and strips the fields register-task-definition rejects (they only exist on
-# a *registered* revision, not an input to create one). Pure transformation —
-# no AWS calls — so it's unit-testable on its own.
+# first container's image (and, optionally, its command; and upserts
+# environment variables), and strips the fields register-task-definition
+# rejects (they only exist on a *registered* revision, not an input to create
+# one). Pure transformation — no AWS calls — so it's unit-testable on its own.
 patch_image() {
   local new_image="$1"
   local new_command="${2:-}"
-  local new_environment="${3:-}"
-  jq --arg image "$new_image" --argjson command "${new_command:-null}" --argjson environment "${new_environment:-null}" '
+  local env_upsert="${3:-}"
+  jq --arg image "$new_image" --argjson command "${new_command:-null}" --argjson upsert "${env_upsert:-null}" '
     .containerDefinitions[0].image = $image
     | (if $command != null then .containerDefinitions[0].command = $command else . end)
-    | (if $environment != null then .containerDefinitions[0].environment = $environment else . end)
+    | (if $upsert != null then
+         ($upsert | map(.name)) as $names
+         | .containerDefinitions[0].environment =
+             (((.containerDefinitions[0].environment // [])
+               | map(select(.name as $n | ($names | index($n)) == null)))
+              + $upsert)
+       else . end)
     | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
   '
 }
@@ -41,13 +52,13 @@ main() {
   local family="$1"
   local image="$2"
   local command="${3:-}"
-  local environment="${4:-}"
+  local env_upsert="${4:-}"
 
   local current
   current=$(aws ecs describe-task-definition --task-definition "$family" --query 'taskDefinition' --output json)
 
   local patched
-  patched=$(echo "$current" | patch_image "$image" "$command" "$environment")
+  patched=$(echo "$current" | patch_image "$image" "$command" "$env_upsert")
 
   aws ecs register-task-definition --cli-input-json "$patched" --query 'taskDefinition.taskDefinitionArn' --output text
 }

@@ -199,11 +199,19 @@ jobs:
           declare -A service_commands=(
             [api]='["bash", "scripts/start/api.sh"]'
           )
+          # CORS_ORIGINS must be a JSON array — a comma-separated list raises a
+          # SettingsError and the API never boots. Without it the browser gets
+          # "Disallowed CORS origin" on every call from the frontend origin.
+          # Upserted, not replaced, so the endpoints Terraform resolved at apply
+          # time (DB_HOST, REDIS_HOST) stay exactly as registered.
+          declare -A service_env=(
+            [api]='[{"name": "CORS_ORIGINS", "value": "[\"https://wearables-app-qa.longevo.com\"]"}]'
+          )
           declare -A registered=()
           for service in "${!families[@]}"; do
             family="${families[$service]%%:*}"
             image="${families[$service]#*:}"
-            td_arn=$(.github/scripts/register-task-def-with-image.sh "$family" "$image" "${service_commands[$service]:-}")
+            td_arn=$(.github/scripts/register-task-def-with-image.sh "$family" "$image" "${service_commands[$service]:-}" "${service_env[$service]:-}")
             registered[$family]="$td_arn"
             echo "Deploying $service with $td_arn"
             aws ecs update-service --cluster "$CLUSTER" --service "$family" --task-definition "$td_arn" > /dev/null
