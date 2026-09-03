@@ -7,7 +7,7 @@ set -euo pipefail
 # `lifecycle { ignore_changes = [container_definitions] }` — this script is
 # what supplies the real one on every deploy.
 #
-# Usage: register-task-def-with-image.sh <family> <image-uri> [command-json-array] [env-upsert-json-array]
+# Usage: register-task-def-with-image.sh <family> <image-uri> [command-json-array] [env-upsert-json-array] [secret-upsert-json-array]
 # The optional third argument overrides containerDefinitions[0].command — for
 # families where Terraform's initial command is a placeholder that must be
 # replaced too (e.g. db-bootstrap, which runs the same backend image as api
@@ -23,6 +23,10 @@ set -euo pipefail
 # family's registered environment holds values Terraform resolved at apply time
 # (Aurora and Valkey endpoints), which the pipeline has no business restating —
 # dropping them by supplying a partial list would break the container.
+# The optional fifth argument does the same upsert for
+# containerDefinitions[0].secrets, matching on `name` and carrying `valueFrom`
+# ARNs rather than values — the secret material itself never passes through
+# here, only the pointer ECS resolves at task start.
 # Prints the new task definition ARN to stdout on success.
 
 # patch_image reads a task definition JSON object from stdin, replaces the
@@ -34,7 +38,11 @@ patch_image() {
   local new_image="$1"
   local new_command="${2:-}"
   local env_upsert="${3:-}"
-  jq --arg image "$new_image" --argjson command "${new_command:-null}" --argjson upsert "${env_upsert:-null}" '
+  local secret_upsert="${4:-}"
+  jq --arg image "$new_image" \
+     --argjson command "${new_command:-null}" \
+     --argjson upsert "${env_upsert:-null}" \
+     --argjson secrets "${secret_upsert:-null}" '
     .containerDefinitions[0].image = $image
     | (if $command != null then .containerDefinitions[0].command = $command else . end)
     | (if $upsert != null then
@@ -43,6 +51,13 @@ patch_image() {
              (((.containerDefinitions[0].environment // [])
                | map(select(.name as $n | ($names | index($n)) == null)))
               + $upsert)
+       else . end)
+    | (if $secrets != null then
+         ($secrets | map(.name)) as $snames
+         | .containerDefinitions[0].secrets =
+             (((.containerDefinitions[0].secrets // [])
+               | map(select(.name as $n | ($snames | index($n)) == null)))
+              + $secrets)
        else . end)
     | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
   '
@@ -53,12 +68,13 @@ main() {
   local image="$2"
   local command="${3:-}"
   local env_upsert="${4:-}"
+  local secret_upsert="${5:-}"
 
   local current
   current=$(aws ecs describe-task-definition --task-definition "$family" --query 'taskDefinition' --output json)
 
   local patched
-  patched=$(echo "$current" | patch_image "$image" "$command" "$env_upsert")
+  patched=$(echo "$current" | patch_image "$image" "$command" "$env_upsert" "$secret_upsert")
 
   aws ecs register-task-definition --cli-input-json "$patched" --query 'taskDefinition.taskDefinitionArn' --output text
 }

@@ -129,4 +129,50 @@ if [ "$env_value" != '[{"name":"DB_NAME","value":"open_wearables"}]' ]; then
   exit 1
 fi
 
+# --- test: a secret upsert adds without dropping the already-registered ones ---
+# Same reasoning as the environment upsert: the registered secrets carry ARNs
+# Terraform resolved at apply time, and a partial list would silently strip
+# DB_PASSWORD or REDIS_PASSWORD and leave the container unable to start.
+FIXTURE_SECRETS=$(echo "$FIXTURE" | jq '.taskDefinition.containerDefinitions[0].secrets = [
+  {"name":"DB_PASSWORD","valueFrom":"arn:aws:secretsmanager:us-west-2:0:secret:db"},
+  {"name":"SECRET_KEY","valueFrom":"arn:aws:secretsmanager:us-west-2:0:secret:sk"}
+]')
+result_sec=$(echo "$FIXTURE_SECRETS" | jq '.taskDefinition' | patch_image "img:1" "" "" '[{"name":"WHOOP_CLIENT_SECRET","valueFrom":"arn:aws:secretsmanager:us-west-2:0:secret:whoop"}]')
+sec_names=$(echo "$result_sec" | jq -c '[.containerDefinitions[0].secrets[].name] | sort')
+if [ "$sec_names" != '["DB_PASSWORD","SECRET_KEY","WHOOP_CLIENT_SECRET"]' ]; then
+  echo "FAIL: secret upsert should add without dropping, got: $sec_names"
+  exit 1
+fi
+db_arn=$(echo "$result_sec" | jq -r '.containerDefinitions[0].secrets[] | select(.name=="DB_PASSWORD") | .valueFrom')
+if [ "$db_arn" != "arn:aws:secretsmanager:us-west-2:0:secret:db" ]; then
+  echo "FAIL: an existing secret ARN must survive the upsert, got: $db_arn"
+  exit 1
+fi
+
+# --- test: a secret upsert replaces a rotated ARN exactly once ---
+result_sec2=$(echo "$FIXTURE_SECRETS" | jq '.taskDefinition' | patch_image "img:1" "" "" '[{"name":"DB_PASSWORD","valueFrom":"arn:aws:secretsmanager:us-west-2:0:secret:db-NEW"}]')
+occ=$(echo "$result_sec2" | jq '[.containerDefinitions[0].secrets[] | select(.name=="DB_PASSWORD")] | length')
+new_arn=$(echo "$result_sec2" | jq -r '.containerDefinitions[0].secrets[] | select(.name=="DB_PASSWORD") | .valueFrom')
+if [ "$occ" != "1" ] || [ "$new_arn" != "arn:aws:secretsmanager:us-west-2:0:secret:db-NEW" ]; then
+  echo "FAIL: secret overwrite should leave exactly one updated entry, got occ=$occ arn=$new_arn"
+  exit 1
+fi
+
+# --- test: no secret argument leaves the registered secrets untouched ---
+result_nosec=$(echo "$FIXTURE_SECRETS" | jq '.taskDefinition' | patch_image "img:1")
+sec_names=$(echo "$result_nosec" | jq -c '[.containerDefinitions[0].secrets[].name] | sort')
+if [ "$sec_names" != '["DB_PASSWORD","SECRET_KEY"]' ]; then
+  echo "FAIL: secrets should be untouched without an upsert, got: $sec_names"
+  exit 1
+fi
+
+# --- test: env and secret upserts compose without interfering ---
+result_both=$(echo "$FIXTURE_SECRETS" | jq '.taskDefinition' | patch_image "img:1" "" '[{"name":"API_BASE_URL","value":"https://api.example.com"}]' '[{"name":"OURA_CLIENT_SECRET","valueFrom":"arn:oura"}]')
+env_ok=$(echo "$result_both" | jq -c '[.containerDefinitions[0].environment[].name] | sort')
+sec_ok=$(echo "$result_both" | jq -c '[.containerDefinitions[0].secrets[].name] | sort')
+if [ "$env_ok" != '["API_BASE_URL","ENVIRONMENT"]' ] || [ "$sec_ok" != '["DB_PASSWORD","OURA_CLIENT_SECRET","SECRET_KEY"]' ]; then
+  echo "FAIL: env and secret upserts interfered, env=$env_ok sec=$sec_ok"
+  exit 1
+fi
+
 echo "All tests passed"
