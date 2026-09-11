@@ -193,6 +193,34 @@ def _maybe_dispatch_outgoing_webhook(event: SyncStatusEvent) -> None:
         logger.debug("Failed to dispatch outgoing sync webhook: %s", exc, exc_info=True)
 
 
+# Estados terminales que representan "entró dato". SKIPPED queda afuera a
+# propósito: `webhook_delivered` lo usa para entregas duplicadas y no-op.
+_NOTIFIABLE_STATUSES = frozenset({SyncStatus.SUCCESS, SyncStatus.PARTIAL})
+
+
+def _notify_sync_completed(event: SyncStatusEvent) -> None:
+    """Publicar el evento de corrida terminada, sin poder romper la ingesta.
+
+    Este es el único productor de `sync.completed`, y cubre los cuatro caminos
+    de ingesta del fork porque todos desembocan acá. Ver la sección 4 del
+    diseño 2026-09-11.
+    """
+    if event.stage != SyncStage.COMPLETED or event.status not in _NOTIFIABLE_STATUSES:
+        return
+
+    from app.services.outgoing_webhooks import sync_notifications
+
+    if not sync_notifications.is_enabled():
+        return
+
+    try:
+        from app.integrations.celery.tasks.publish_sync_notification_task import publish_sync_notification
+
+        publish_sync_notification.delay(event.model_dump_json())
+    except Exception:
+        logger.warning("Could not enqueue sync.completed for run %s", event.run_id, exc_info=True)
+
+
 def emit_event(
     *,
     user_id: str | UUID,
@@ -230,6 +258,7 @@ def emit_event(
         ended_at=ended_at,
     )
     emit(event)
+    _notify_sync_completed(event)
     return event
 
 
