@@ -40,6 +40,7 @@ from .process_aws_upload_task import process_aws_upload
 from .process_s3_sdk_upload_task import process_s3_sdk_upload
 from .process_sdk_upload_task import process_sdk_upload
 from .process_xml_upload_task import process_xml_upload
+from .publish_sync_notification_task import publish_sync_notification
 from .refresh_dashboard_stats_task import refresh_dashboard_total_data_points
 from .register_provider_webhooks_task import register_provider_webhooks
 from .renew_oura_webhooks_task import renew_oura_webhooks
@@ -83,4 +84,6 @@ __all__ = [
     "renew_oura_webhooks",
     # Outgoing webhooks
     "emit_webhook_event",
+    # Sync notifications (SNS)
+    "publish_sync_notification",
 ]
