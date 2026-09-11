@@ -12,11 +12,18 @@ import pytest
 from celery.exceptions import Retry
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.integrations.celery.tasks.publish_sync_notification_task import publish_sync_notification
 from app.schemas.sync_status import SyncSource, SyncStage, SyncStatus, SyncStatusEvent
 from tests.factories import UserFactory
 
 USER_ID = UUID("11111111-1111-1111-1111-111111111111")
+
+
+@pytest.fixture
+def enable_sync_notifications(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "sync_notifications_enabled", True)
+    monkeypatch.setattr(settings, "aws_sync_events_topic_arn", "arn:aws:sns:eu-north-1:123456789012:sync-events.fifo")
 
 
 @pytest.fixture
@@ -45,6 +52,7 @@ def event_json() -> str:
 @patch("app.integrations.celery.tasks.publish_sync_notification_task.SessionLocal")
 def test_resolves_external_user_id_from_the_database(
     mock_session_local: MagicMock,
+    enable_sync_notifications: None,
     db: Session,
     event_json: str,
 ) -> None:
@@ -62,6 +70,7 @@ def test_resolves_external_user_id_from_the_database(
 @patch("app.integrations.celery.tasks.publish_sync_notification_task.SessionLocal")
 def test_returns_none_external_user_id_when_the_user_is_unknown(
     mock_session_local: MagicMock,
+    enable_sync_notifications: None,
     db: Session,
     event_json: str,
 ) -> None:
@@ -77,6 +86,7 @@ def test_returns_none_external_user_id_when_the_user_is_unknown(
 @patch("app.integrations.celery.tasks.publish_sync_notification_task.SessionLocal")
 def test_retries_when_the_publish_fails(
     mock_session_local: MagicMock,
+    enable_sync_notifications: None,
     db: Session,
     event_json: str,
 ) -> None:
@@ -90,3 +100,17 @@ def test_retries_when_the_publish_fails(
         pytest.raises(Retry),
     ):
         publish_sync_notification(event_json)
+
+
+@patch("app.integrations.celery.tasks.publish_sync_notification_task.SessionLocal")
+def test_skips_without_touching_the_database_when_disabled(
+    mock_session_local: MagicMock,
+    event_json: str,
+) -> None:
+    """sync_notifications_enabled defaults to False: the task must no-op, never retry."""
+    with patch("app.services.outgoing_webhooks.sync_notifications.publish") as mock_publish:
+        result = publish_sync_notification(event_json)
+
+    assert result == {"published": False}
+    mock_publish.assert_not_called()
+    mock_session_local.assert_not_called()

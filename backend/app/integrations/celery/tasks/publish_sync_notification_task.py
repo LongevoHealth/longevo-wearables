@@ -24,6 +24,10 @@ logger = getLogger(__name__)
     acks_late=True,
 )
 def publish_sync_notification(self: Any, event_json: str) -> dict[str, Any]:
+    if not sync_notifications.is_enabled():
+        logger.debug("Sync notifications are not configured — skipping publish")
+        return {"published": False}
+
     event = SyncStatusEvent.model_validate_json(event_json)
 
     with SessionLocal() as db:
