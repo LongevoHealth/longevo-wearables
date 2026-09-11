@@ -46,7 +46,7 @@ def sdk_payload_factory() -> Callable[[list[tuple[str, datetime, float]]], dict[
 def test_load_data_returns_batch_window(
     db: Session, sdk_payload_factory: Callable[[list[tuple[str, datetime, float]]], dict[str, Any]]
 ) -> None:
-    """La ventana es el minimo y el maximo de todo lo que toco el batch."""
+    """The window is the min and max of everything the batch touched."""
     user = UserFactory()
     raw = sdk_payload_factory(
         [
@@ -65,7 +65,7 @@ def test_load_data_returns_batch_window(
 def test_load_data_window_is_none_when_batch_saved_nothing(
     db: Session, sdk_payload_factory: Callable[[list[tuple[str, datetime, float]]], dict[str, Any]]
 ) -> None:
-    """Sin datos no hay ventana. El consumidor descarta ese evento."""
+    """No data means no window. The consumer discards that event."""
     user = UserFactory()
 
     result = import_service.load_data(db, sdk_payload_factory([]), user_id=str(user.id))

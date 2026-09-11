@@ -365,7 +365,7 @@ class ImportService:
         window_end: datetime | None = None
 
         def _widen(start: datetime, end: datetime | None = None) -> None:
-            """Ensanchar la ventana del batch con el intervalo de un registro."""
+            """Widen the batch window to cover a record's interval."""
             nonlocal window_start, window_end
             finish = end or start
             if window_start is None or start < window_start:
