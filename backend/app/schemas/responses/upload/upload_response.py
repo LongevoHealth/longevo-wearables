@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -22,3 +24,9 @@ class UploadDataResponse(BaseModel):
     )
     workouts_saved: int = Field(0, description="Workouts saved")
     sleep_saved: int = Field(0, description="Sleep records saved")
+    window_start: datetime | None = Field(
+        None, description="Earliest timestamp touched by this batch. None when the batch saved nothing."
+    )
+    window_end: datetime | None = Field(
+        None, description="Latest timestamp touched by this batch. None when the batch saved nothing."
+    )

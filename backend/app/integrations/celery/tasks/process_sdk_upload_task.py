@@ -170,6 +170,8 @@ def process_sdk_upload(
                     "sleep_saved": sleep_saved,
                     "types": types,
                     "dropped_count": dropped_count,
+                    "window_start": result.get("window_start"),
+                    "window_end": result.get("window_end"),
                 },
             )
         else:
