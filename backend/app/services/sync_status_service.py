@@ -208,12 +208,12 @@ def _notify_sync_completed(event: SyncStatusEvent) -> None:
     if event.stage != SyncStage.COMPLETED or event.status not in _NOTIFIABLE_STATUSES:
         return
 
-    from app.services.outgoing_webhooks import sync_notifications
-
-    if not sync_notifications.is_enabled():
-        return
-
     try:
+        from app.services.outgoing_webhooks import sync_notifications
+
+        if not sync_notifications.is_enabled():
+            return
+
         from app.integrations.celery.tasks.publish_sync_notification_task import publish_sync_notification
 
         publish_sync_notification.delay(event.model_dump_json())

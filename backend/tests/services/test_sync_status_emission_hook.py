@@ -69,3 +69,20 @@ def test_a_broker_failure_never_breaks_ingestion(dispatch: MagicMock, enabled_sy
     event = sync_status_service.completed(USER, "apple", SyncSource.SDK, run_id="b1")
 
     assert event.run_id == "b1"
+
+
+def test_a_broken_is_enabled_check_never_breaks_ingestion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """La verificación de flag es parte del mismo seam: tampoco puede romper la ingesta.
+
+    `is_enabled()` es una lectura de atributo hoy, pero eso es un detalle de
+    implementación de `sync_notifications`. El contrato de `emit_event` es
+    que nada en este hook puede propagar, sin importar qué explote primero.
+    """
+    monkeypatch.setattr(
+        "app.services.outgoing_webhooks.sync_notifications.is_enabled",
+        MagicMock(side_effect=RuntimeError("boom")),
+    )
+
+    event = sync_status_service.completed(USER, "apple", SyncSource.SDK, run_id="b1")
+
+    assert event.run_id == "b1"
