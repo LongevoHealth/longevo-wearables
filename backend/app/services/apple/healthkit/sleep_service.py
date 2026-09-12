@@ -13,6 +13,7 @@ from app.constants.series_types.sdk import (
 from app.constants.sleep import SleepStageType
 from app.database import DbSession
 from app.integrations.redis_client import get_redis_client
+from app.models import EventRecord
 from app.schemas.model_crud.activities import (
     EventRecordCreate,
     EventRecordDetailCreate,
@@ -422,7 +423,7 @@ def _calculate_final_metrics(stages: list[SleepStateStage]) -> tuple[dict, list[
     return metrics, cleaned_stages
 
 
-def finish_sleep(db_session: DbSession, user_id: str, state: SleepState) -> None:
+def finish_sleep(db_session: DbSession, user_id: str, state: SleepState) -> EventRecord | None:
     """Finish a sleep session and save the record to the database.
 
     Before creating a new record the function checks whether an existing adjacent
@@ -433,6 +434,12 @@ def finish_sleep(db_session: DbSession, user_id: str, state: SleepState) -> None
     payload is finalized immediately (historical data is available right away) and
     each merge step extends the accumulated DB record until the whole night is
     represented as a single session.
+
+    Returns the persisted record on success, or ``None`` when the write failed
+    (the exception is logged, not raised — see the ``except`` below). Callers
+    that finalize a session out of band (``finalize_stale_sleeps``) rely on
+    this to know whether — and with what window — to announce the session,
+    since this function itself emits no sync-status event.
     """
 
     # Recalculate metrics from stages to handle overlaps/duplicates
@@ -528,6 +535,7 @@ def finish_sleep(db_session: DbSession, user_id: str, state: SleepState) -> None
         # Delete from Redis only after a successful DB write so a transient error
         # keeps the session available for the next periodic finalization attempt.
         delete_sleep_state(user_id)
+        return created_or_existing_record
     except Exception as e:
         log_structured(
             logger,
@@ -539,3 +547,4 @@ def finish_sleep(db_session: DbSession, user_id: str, state: SleepState) -> None
             sleep_record_id=sleep_record.id,
             error=str(e),
         )
+        return None
