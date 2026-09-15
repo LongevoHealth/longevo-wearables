@@ -1,0 +1,338 @@
+<title>Ingesta Open Wearables → Longevo</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;700;800&display=swap">
+
+<style>
+  :root {
+    --paper: #FFFFFF;
+    --surface: #F6F7FB;
+    --ink: #303439;
+    --muted: #57606A;
+    --soft: #AFB3C3;
+    --rule: rgba(48,52,57,0.12);
+    --accent: #6D56C9;
+    --accent-2: #326EE3;
+    --accent-tint: rgba(109,86,201,0.08);
+    --link: #326EE3;
+    --err: #EC6168;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: "Plus Jakarta Sans", Inter, system-ui, -apple-system, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1320px; margin: 0 auto; padding: 3rem 2rem 4rem; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 0.75rem;
+  }
+
+  h1 {
+    font-size: 2rem;
+    line-height: 2.5rem;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    margin: 0 0 0.5rem;
+  }
+
+  h1 .grad {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .sub {
+    font-size: 1rem;
+    line-height: 1.5rem;
+    color: var(--muted);
+    max-width: 62ch;
+    margin: 0 0 2.5rem;
+    font-weight: 500;
+  }
+
+  .figure { overflow-x: auto; margin: 0 0 2.5rem; }
+  .figure svg { display: block; min-width: 1000px; width: 100%; height: auto; }
+
+  .cards {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr 0.9fr;
+    gap: 1rem;
+    margin-bottom: 2.5rem;
+  }
+
+  @media (max-width: 900px) { .cards { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 1.25rem;
+  }
+
+  .card-header { display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0 0.75rem; }
+  .card-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .dot-accent { background: var(--accent); }
+  .dot-link { background: var(--link); }
+  .dot-err { background: var(--err); }
+  .card h3 { font-size: 0.9375rem; font-weight: 700; margin: 0; }
+  .card ul { margin: 0; padding-left: 1.1rem; }
+  .card li { font-size: 0.8125rem; line-height: 1.5; color: var(--muted); font-weight: 500; margin-bottom: 0.375rem; }
+  .card li:last-child { margin-bottom: 0; }
+  .card li b { color: var(--ink); font-weight: 700; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 1rem;
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    color: var(--soft);
+    letter-spacing: 0.04em;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #1B1E26;
+      --surface: #22262F;
+      --ink: #EDEFF5;
+      --muted: #A6AEC0;
+      --soft: #6C7488;
+      --rule: rgba(237,239,245,0.14);
+      --accent: #9B87F0;
+      --accent-2: #6BA0F5;
+      --accent-tint: rgba(155,135,240,0.12);
+      --link: #6BA0F5;
+    }
+  }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Longevo · Wearables · Diseño 2026-09-11</p>
+  <h1>Ingesta de <span class="grad">Open Wearables</span> hacia la API de dominio</h1>
+  <p class="sub">
+    El evento avisa; el dato se busca. Open Wearables publica una notificación sin PHI cuando termina
+    un batch, y <code>wearables-api</code> resuelve el detalle contra la API externa. Fase 1: cambia la
+    fuente, no el dominio.
+  </p>
+
+  <div class="figure">
+    <svg viewBox="0 0 1280 700" role="img" aria-labelledby="ingesta-ow-title ingesta-ow-desc"
+         xmlns="http://www.w3.org/2000/svg">
+      <title id="ingesta-ow-title">Ingesta de Open Wearables hacia la API de dominio de Longevo</title>
+      <desc id="ingesta-ow-desc">Open Wearables ingesta datos del SDK móvil, los guarda en Aurora y publica un evento sync.completed sin datos de salud a un topic SNS FIFO. Una cola SQS FIFO ordenada por usuario entrega ese evento a wearables-api de Longevo, que resuelve el detalle con un GET autenticado contra la API externa de Open Wearables y persiste en su propio DocumentDB. Longevo no tiene ruta de red hacia la base de Open Wearables.</desc>
+
+      <defs>
+        <marker id="ar" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#57606A"/>
+        </marker>
+        <marker id="ar-ac" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#6D56C9"/>
+        </marker>
+        <marker id="ar-lk" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#326EE3"/>
+        </marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#FFFFFF"/>
+
+      <!-- ============ ZONAS (primero) ============ -->
+      <rect x="192" y="88" width="416" height="372" rx="8" fill="rgba(48,52,57,0.02)" stroke="rgba(48,52,57,0.10)" stroke-width="0.8"/>
+      <rect x="228" y="92" width="216" height="12" rx="2" fill="#FFFFFF"/>
+      <text x="336" y="101" fill="rgba(48,52,57,0.45)" font-size="7" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.14em">OPEN WEARABLES · VPC PROPIA</text>
+
+      <rect x="612" y="88" width="356" height="148" rx="8" fill="rgba(48,52,57,0.02)" stroke="rgba(48,52,57,0.10)" stroke-width="0.8"/>
+      <rect x="700" y="92" width="180" height="12" rx="2" fill="#FFFFFF"/>
+      <text x="790" y="101" fill="rgba(48,52,57,0.45)" font-size="7" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.14em">BUS AWS · MISMA CUENTA</text>
+
+      <rect x="992" y="88" width="224" height="372" rx="8" fill="rgba(48,52,57,0.02)" stroke="rgba(48,52,57,0.10)" stroke-width="0.8"/>
+      <rect x="1032" y="92" width="144" height="12" rx="2" fill="#FFFFFF"/>
+      <text x="1104" y="101" fill="rgba(48,52,57,0.45)" font-size="7" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.14em">LONGEVO · DOMINIO</text>
+
+      <!-- ============ ARROWS (antes que las cajas) ============ -->
+
+      <!-- 1. SDK -> Ingesta -->
+      <line x1="168" y1="162" x2="216" y2="162" stroke="#57606A" stroke-width="1.2" marker-end="url(#ar)"/>
+
+      <!-- 2. Ingesta -> Aurora -->
+      <line x1="296" y1="196" x2="296" y2="356" stroke="#57606A" stroke-width="1.2" marker-end="url(#ar)"/>
+
+      <!-- 3. Ingesta -> SNS  (evento, accent) -->
+      <line x1="376" y1="162" x2="636" y2="162" stroke="#6D56C9" stroke-width="1.4" marker-end="url(#ar-ac)"/>
+
+      <!-- 4. SNS -> SQS -->
+      <line x1="764" y1="162" x2="812" y2="162" stroke="#6D56C9" stroke-width="1.4" marker-end="url(#ar-ac)"/>
+
+      <!-- 5. SQS -> wearables-api -->
+      <line x1="944" y1="148" x2="1016" y2="148" stroke="#6D56C9" stroke-width="1.4" marker-end="url(#ar-ac)"/>
+
+      <!-- 6. wearables-api -> External API (pull, link-blue) -->
+      <path d="M 1016,176 H 984 Q 976,176 976,184 V 496 Q 976,504 968,504 H 512 Q 504,504 504,496 V 420"
+            fill="none" stroke="#326EE3" stroke-width="1.4" marker-end="url(#ar-lk)"/>
+
+      <!-- 7. External API -> Aurora -->
+      <line x1="424" y1="388" x2="376" y2="388" stroke="#57606A" stroke-width="1.2" marker-end="url(#ar)"/>
+
+      <!-- 8. wearables-api -> DocumentDB -->
+      <line x1="1104" y1="204" x2="1104" y2="356" stroke="#57606A" stroke-width="1.2" marker-end="url(#ar)"/>
+
+      <!-- 9. Ruta prohibida: Longevo NO alcanza la base de OW -->
+      <path d="M 1192,162 H 1232 Q 1240,162 1240,170 V 568 Q 1240,576 1232,576 H 632"
+            fill="none" stroke="#EC6168" stroke-width="1.2" stroke-dasharray="5,4"/>
+      <line x1="624" y1="562" x2="624" y2="590" stroke="#EC6168" stroke-width="2"/>
+
+      <!-- ============ ARROW LABELS ============ -->
+      <rect x="176" y="140" width="32" height="12" rx="2" fill="#FFFFFF"/>
+      <text x="192" y="149" fill="#57606A" font-size="8" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">SYNC</text>
+
+      <rect x="304" y="270" width="48" height="12" rx="2" fill="#FFFFFF"/>
+      <text x="328" y="279" fill="#57606A" font-size="8" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">WRITE</text>
+
+      <rect x="446" y="140" width="120" height="12" rx="2" fill="#FFFFFF"/>
+      <text x="506" y="149" fill="#6D56C9" font-size="8" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">SYNC.COMPLETED</text>
+
+      <rect x="772" y="140" width="32" height="12" rx="2" fill="#FFFFFF"/>
+      <text x="788" y="149" fill="#6D56C9" font-size="8" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">IAM</text>
+
+      <rect x="948" y="124" width="64" height="12" rx="2" fill="#FFFFFF"/>
+      <text x="980" y="133" fill="#6D56C9" font-size="8" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">GROUP=USER</text>
+
+      <rect x="684" y="484" width="112" height="12" rx="2" fill="#FFFFFF"/>
+      <text x="740" y="493" fill="#326EE3" font-size="8" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">GET · API KEY</text>
+
+      <rect x="384" y="368" width="32" height="12" rx="2" fill="#FFFFFF"/>
+      <text x="400" y="377" fill="#57606A" font-size="8" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">READ</text>
+
+      <rect x="1112" y="274" width="56" height="12" rx="2" fill="#FFFFFF"/>
+      <text x="1140" y="283" fill="#57606A" font-size="8" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">UPSERT</text>
+
+      <rect x="668" y="556" width="144" height="12" rx="2" fill="#FFFFFF"/>
+      <text x="740" y="565" fill="#EC6168" font-size="8" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">SIN RUTA A LA BASE</text>
+
+      <!-- ============ NODOS ============ -->
+
+      <!-- SDK Móvil -->
+      <rect x="40" y="128" width="128" height="68" rx="6" fill="#FFFFFF"/>
+      <rect x="40" y="128" width="128" height="68" rx="6" fill="rgba(87,96,106,0.10)" stroke="#AFB3C3" stroke-width="1"/>
+      <rect x="48" y="134" width="32" height="12" rx="2" fill="transparent" stroke="rgba(175,179,195,0.7)" stroke-width="0.8"/>
+      <text x="64" y="143" fill="#57606A" font-size="7" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">IN</text>
+      <text x="104" y="168" fill="#303439" font-size="12" font-weight="700" font-family="'Plus Jakarta Sans', sans-serif" text-anchor="middle">Fuentes</text>
+      <text x="104" y="184" fill="#57606A" font-size="9" font-family="ui-monospace, monospace" text-anchor="middle">SDK · providers</text>
+
+      <!-- Ingesta -->
+      <rect x="216" y="128" width="160" height="68" rx="6" fill="#FFFFFF"/>
+      <rect x="216" y="128" width="160" height="68" rx="6" fill="#FFFFFF" stroke="#303439" stroke-width="1"/>
+      <rect x="224" y="134" width="40" height="12" rx="2" fill="transparent" stroke="rgba(48,52,57,0.40)" stroke-width="0.8"/>
+      <text x="244" y="143" fill="#303439" font-size="7" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">WORKER</text>
+      <text x="296" y="168" fill="#303439" font-size="12" font-weight="700" font-family="'Plus Jakarta Sans', sans-serif" text-anchor="middle">Ingesta</text>
+      <text x="296" y="184" fill="#57606A" font-size="9" font-family="ui-monospace, monospace" text-anchor="middle">celery · sync_status</text>
+
+      <!-- Aurora -->
+      <rect x="216" y="356" width="160" height="64" rx="6" fill="#FFFFFF"/>
+      <rect x="216" y="356" width="160" height="64" rx="6" fill="rgba(48,52,57,0.05)" stroke="#57606A" stroke-width="1"/>
+      <text x="296" y="384" fill="#303439" font-size="12" font-weight="700" font-family="'Plus Jakarta Sans', sans-serif" text-anchor="middle">Aurora</text>
+      <text x="296" y="400" fill="#57606A" font-size="9" font-family="ui-monospace, monospace" text-anchor="middle">PHI · subnet aislada</text>
+
+      <!-- External API (FOCAL) -->
+      <rect x="424" y="356" width="160" height="64" rx="6" fill="#FFFFFF"/>
+      <rect x="424" y="356" width="160" height="64" rx="6" fill="rgba(109,86,201,0.08)" stroke="#6D56C9" stroke-width="1.2"/>
+      <text x="504" y="384" fill="#303439" font-size="12" font-weight="700" font-family="'Plus Jakarta Sans', sans-serif" text-anchor="middle">External API</text>
+      <text x="504" y="400" fill="#6D56C9" font-size="9" font-family="ui-monospace, monospace" text-anchor="middle">summaries · events</text>
+
+      <!-- SNS -->
+      <rect x="636" y="128" width="128" height="68" rx="6" fill="#FFFFFF"/>
+      <rect x="636" y="128" width="128" height="68" rx="6" fill="rgba(48,52,57,0.03)" stroke="rgba(48,52,57,0.30)" stroke-width="1"/>
+      <text x="700" y="168" fill="#303439" font-size="12" font-weight="700" font-family="'Plus Jakarta Sans', sans-serif" text-anchor="middle">SNS FIFO</text>
+      <text x="700" y="184" fill="#57606A" font-size="9" font-family="ui-monospace, monospace" text-anchor="middle">topic · KMS</text>
+
+      <!-- SQS (FOCAL) -->
+      <rect x="812" y="128" width="132" height="68" rx="6" fill="#FFFFFF"/>
+      <rect x="812" y="128" width="132" height="68" rx="6" fill="rgba(109,86,201,0.08)" stroke="#6D56C9" stroke-width="1.2"/>
+      <text x="878" y="168" fill="#303439" font-size="12" font-weight="700" font-family="'Plus Jakarta Sans', sans-serif" text-anchor="middle">SQS FIFO</text>
+      <text x="878" y="184" fill="#6D56C9" font-size="9" font-family="ui-monospace, monospace" text-anchor="middle">+ DLQ</text>
+
+      <!-- wearables-api -->
+      <rect x="1016" y="120" width="176" height="84" rx="6" fill="#FFFFFF"/>
+      <rect x="1016" y="120" width="176" height="84" rx="6" fill="#FFFFFF" stroke="#303439" stroke-width="1"/>
+      <rect x="1024" y="126" width="36" height="12" rx="2" fill="transparent" stroke="rgba(48,52,57,0.40)" stroke-width="0.8"/>
+      <text x="1042" y="135" fill="#303439" font-size="7" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">NEST</text>
+      <text x="1104" y="164" fill="#303439" font-size="12" font-weight="700" font-family="'Plus Jakarta Sans', sans-serif" text-anchor="middle">wearables-api</text>
+      <text x="1104" y="180" fill="#57606A" font-size="9" font-family="ui-monospace, monospace" text-anchor="middle">handler + use cases</text>
+      <text x="1104" y="194" fill="#57606A" font-size="9" font-family="ui-monospace, monospace" text-anchor="middle">fuente default</text>
+
+      <!-- DocumentDB -->
+      <rect x="1016" y="356" width="176" height="64" rx="6" fill="#FFFFFF"/>
+      <rect x="1016" y="356" width="176" height="64" rx="6" fill="rgba(48,52,57,0.05)" stroke="#57606A" stroke-width="1"/>
+      <text x="1104" y="384" fill="#303439" font-size="12" font-weight="700" font-family="'Plus Jakarta Sans', sans-serif" text-anchor="middle">DocumentDB</text>
+      <text x="1104" y="400" fill="#57606A" font-size="9" font-family="ui-monospace, monospace" text-anchor="middle">wearables-v2</text>
+
+      <!-- Gate WAF sobre la frontera -->
+      <rect x="480" y="448" width="48" height="24" rx="4" fill="#FFFFFF"/>
+      <rect x="480" y="448" width="48" height="24" rx="4" fill="rgba(109,86,201,0.05)" stroke="rgba(109,86,201,0.50)" stroke-width="1" stroke-dasharray="4,4"/>
+      <text x="504" y="464" fill="#6D56C9" font-size="8" font-family="ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">WAF</text>
+      <text x="544" y="464" fill="#6D56C9" font-size="8" font-family="ui-monospace, monospace" text-anchor="start" letter-spacing="0.06em">SÓLO GET</text>
+
+      <!-- ============ LEGEND ============ -->
+      <line x1="32" y1="628" x2="1248" y2="628" stroke="rgba(48,52,57,0.10)" stroke-width="0.8"/>
+      <text x="32" y="652" fill="#57606A" font-size="8" font-family="ui-monospace, monospace" letter-spacing="0.14em">LEYENDA</text>
+
+      <line x1="128" y1="648" x2="160" y2="648" stroke="#6D56C9" stroke-width="1.4"/>
+      <text x="168" y="652" fill="#57606A" font-size="8" font-family="ui-monospace, monospace" letter-spacing="0.06em">EVENTO · SIN PHI · IAM</text>
+
+      <line x1="384" y1="648" x2="416" y2="648" stroke="#326EE3" stroke-width="1.4"/>
+      <text x="424" y="652" fill="#57606A" font-size="8" font-family="ui-monospace, monospace" letter-spacing="0.06em">PULL · GET + API KEY</text>
+
+      <line x1="624" y1="648" x2="656" y2="648" stroke="#57606A" stroke-width="1.2"/>
+      <text x="664" y="652" fill="#57606A" font-size="8" font-family="ui-monospace, monospace" letter-spacing="0.06em">LECTURA / ESCRITURA LOCAL</text>
+
+      <line x1="928" y1="648" x2="952" y2="648" stroke="#EC6168" stroke-width="1.2" stroke-dasharray="5,4"/>
+      <line x1="956" y1="640" x2="956" y2="656" stroke="#EC6168" stroke-width="2"/>
+      <text x="968" y="652" fill="#57606A" font-size="8" font-family="ui-monospace, monospace" letter-spacing="0.06em">RUTA INEXISTENTE POR DISEÑO</text>
+    </svg>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <p class="eyebrow">El evento</p>
+      <div class="card-header"><span class="card-dot dot-accent"></span><h3>Coalescido y sin dato de salud</h3></div>
+      <ul>
+        <li>Se emite <b>una vez por corrida</b>, en <code>sync_status_service.emit_event</code> — el único seam por el que pasan los cuatro caminos de ingesta, SDK y providers OAuth incluidos.</li>
+        <li>Lleva <b>los dos identificadores</b>: <code>external_user_id</code> para matchear contra <code>user_wearables</code>, y el UUID interno para armar la URL del pull.</li>
+        <li>Ventana temporal y tipos tocados. Nada más.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <p class="eyebrow">La frontera</p>
+      <div class="card-header"><span class="card-dot dot-err"></span><h3>Lo que Longevo no puede hacer</h3></div>
+      <ul>
+        <li>Sin ruta de red a Aurora. No es una convención: <b>no existe el camino</b>.</li>
+        <li>El evento viaja por IAM, no por secreto compartido. Se elimina el webhook público.</li>
+        <li>El WAF sólo deja pasar <code>GET</code> sobre los paths de lectura. El flag <code>read_only</code> en la API key queda para v2.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <p class="eyebrow">Lo que no cambia</p>
+      <div class="card-header"><span class="card-dot dot-link"></span><h3>Fase 1 toca la fuente, no el dominio</h3></div>
+      <ul>
+        <li>El store de <code>wearables-v2</code>, el matching, los resúmenes B2B y la gamificación quedan intactos.</li>
+        <li>La convivencia con Spike usa <code>DefaultWearableSourceService</code>, que ya existe y está probado.</li>
+        <li>El snapshot-replace por ventana además replica los <b>borrados</b> de provider sin un tipo de evento aparte.</li>
+      </ul>
+    </div>
+  </div>
+
+  <footer>
+    Longevo · docs/superpowers/specs/2026-09-11-ingesta-open-wearables-longevo-design.md
+  </footer>
+</div>

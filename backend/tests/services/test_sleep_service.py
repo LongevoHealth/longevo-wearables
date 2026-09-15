@@ -525,6 +525,88 @@ class TestFinishSleep:
         assert detail.sleep_awake_minutes == 10
         assert detail.sleep_total_duration_minutes == 245  # light+deep+rem (no sleeping)
 
+    @patch("app.services.apple.healthkit.sleep_service.event_record_service")
+    @patch("app.services.apple.healthkit.sleep_service.delete_sleep_state")
+    def test_finish_sleep_returns_the_persisted_record_on_success(
+        self,
+        mock_delete_state: MagicMock,
+        mock_event_service: MagicMock,
+        db: Session,
+    ) -> None:
+        """finish_sleep must hand back the persisted record so callers that
+        finalize a session out of band (finalize_stale_sleeps) can announce
+        it. Without this, a caller cannot tell a session was written at all,
+        let alone with what window (see finding 2, 2026-09-11 review)."""
+        user_id = str(uuid4())
+        mock_record = MagicMock()
+        mock_record.id = uuid4()
+        mock_record.start_datetime = _dt("2026-03-15T23:00:00Z")
+        mock_record.end_datetime = _dt("2026-03-16T01:30:00Z")
+        mock_record.provider = "apple"
+        mock_event_service.create.return_value = mock_record
+        mock_event_service.find_adjacent_sleep_record.return_value = None
+
+        state = SleepState(
+            uuid=str(uuid4()),
+            source_name="Apple Watch",
+            device_model="Watch3,3",
+            provider="apple",
+            start_time=_dt("2026-03-15T23:00:00Z"),
+            end_time=_dt("2026-03-16T01:30:00Z"),
+            last_start_timestamp=_dt("2026-03-16T00:47:00Z"),
+            last_end_timestamp=_dt("2026-03-16T01:30:00Z"),
+            sleeping_seconds=8760.0,
+            stages=[
+                SleepStateStage(
+                    stage=SleepStageType.SLEEPING,
+                    start_time=_dt("2026-03-15T23:00:00Z"),
+                    end_time=_dt("2026-03-16T01:30:00Z"),
+                ),
+            ],
+        )
+
+        result = finish_sleep(db, user_id, state)
+
+        assert result is mock_record
+
+    @patch("app.services.apple.healthkit.sleep_service.event_record_service")
+    @patch("app.services.apple.healthkit.sleep_service.delete_sleep_state")
+    def test_finish_sleep_returns_none_when_the_write_fails(
+        self,
+        mock_delete_state: MagicMock,
+        mock_event_service: MagicMock,
+        db: Session,
+    ) -> None:
+        """A caller must be able to tell a finalize attempt did not persist
+        anything, so it never announces a sync event for a session that was
+        not actually saved."""
+        user_id = str(uuid4())
+        mock_event_service.create.side_effect = Exception("db down")
+        mock_event_service.find_adjacent_sleep_record.return_value = None
+
+        state = SleepState(
+            uuid=str(uuid4()),
+            source_name="Apple Watch",
+            device_model="Watch3,3",
+            provider="apple",
+            start_time=_dt("2026-03-15T23:00:00Z"),
+            end_time=_dt("2026-03-16T01:30:00Z"),
+            last_start_timestamp=_dt("2026-03-16T00:47:00Z"),
+            last_end_timestamp=_dt("2026-03-16T01:30:00Z"),
+            sleeping_seconds=8760.0,
+            stages=[
+                SleepStateStage(
+                    stage=SleepStageType.SLEEPING,
+                    start_time=_dt("2026-03-15T23:00:00Z"),
+                    end_time=_dt("2026-03-16T01:30:00Z"),
+                ),
+            ],
+        )
+
+        result = finish_sleep(db, user_id, state)
+
+        assert result is None
+
 
 class TestHandleSleepDataIntegration:
     """Integration tests for handle_sleep_data with real payload structures."""

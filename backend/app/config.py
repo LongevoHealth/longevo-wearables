@@ -254,6 +254,12 @@ class Settings(BaseSettings):
     # Bearer token for the Svix API.  If unset, auto-generated from svix_jwt_secret at startup.
     svix_auth_token: SecretStr | None = None
 
+    # SYNC NOTIFICATIONS (SNS)
+    # Notificación de corrida terminada hacia el bus de AWS. Independiente de Svix:
+    # los dos pueden estar prendidos a la vez sin pisarse.
+    sync_notifications_enabled: bool = False
+    aws_sync_events_topic_arn: str | None = None
+
     @model_validator(mode="after")
     def derive_access_log_level(self) -> "Settings":
         if self.access_log_level is None:

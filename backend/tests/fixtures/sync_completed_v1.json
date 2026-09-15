@@ -1,0 +1,14 @@
+{
+  "event_type": "sync.completed",
+  "schema_version": 1,
+  "user_id": "11111111-1111-1111-1111-111111111111",
+  "external_user_id": "uw-123",
+  "provider": "apple",
+  "batch_id": "b1",
+  "occurred_at": "2026-09-11T14:03:12+00:00",
+  "metrics": ["steps", "heart_rate"],
+  "activity_types": ["sleep", "workout"],
+  "earliest_record_start_at": "2026-09-10T22:14:00+00:00",
+  "latest_record_end_at": "2026-09-11T13:58:00+00:00",
+  "counts": {"records": 1240, "workouts": 2, "sleep": 1}
+}

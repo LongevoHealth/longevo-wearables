@@ -72,6 +72,8 @@ class LoadDataResult(TypedDict):
     sleep_saved: int
     dropped: list[InvalidRecord]
     validation_ms: float
+    window_start: datetime | None  # min recorded_at/start touched by the batch; None when nothing was saved
+    window_end: datetime | None  # max recorded_at/end touched by the batch; None when nothing was saved
 
 
 def _parse_sync_request(raw: dict) -> tuple[SDKSyncRequest, list[InvalidRecord]]:
@@ -359,6 +361,17 @@ class ImportService:
         records_saved = 0
         sleep_saved = 0
         types: set[str] = set()
+        window_start: datetime | None = None
+        window_end: datetime | None = None
+
+        def _widen(start: datetime, end: datetime | None = None) -> None:
+            """Widen the batch window to cover a record's interval."""
+            nonlocal window_start, window_end
+            finish = end or start
+            if window_start is None or start < window_start:
+                window_start = start
+            if window_end is None or finish > window_end:
+                window_end = finish
 
         # Process workouts in batch
         workout_bundles = list(self._build_workout_bundles(request, user_id))
@@ -385,6 +398,11 @@ class ImportService:
                 self.timeseries_service.bulk_create_samples(db_session, time_series_samples)
                 records_saved += len(time_series_samples)
                 types.update(sample.series_type.value for sample in time_series_samples)
+                for sample in time_series_samples:
+                    _widen(sample.recorded_at)
+
+            for record, _, _ in workout_bundles:
+                _widen(record.start_datetime, record.end_datetime)
 
         # Process time series samples (records)
         samples = self._build_statistic_bundles(request, user_id)
@@ -392,6 +410,8 @@ class ImportService:
             self.timeseries_service.bulk_create_samples(db_session, samples)
             records_saved += len(samples)
             types.update(sample.series_type.value for sample in samples)
+            for sample in samples:
+                _widen(sample.recorded_at)
 
         # Commit all workout and timeseries changes in one transaction
         db_session.commit()
@@ -400,6 +420,8 @@ class ImportService:
         if request.data.sleep:
             handle_sleep_data(db_session, request, user_id)
             sleep_saved = len(request.data.sleep)
+            for segment in request.data.sleep:
+                _widen(segment.startDate, segment.endDate)
 
         return {
             "workouts_saved": workouts_saved,
@@ -408,6 +430,8 @@ class ImportService:
             "sleep_saved": sleep_saved,
             "dropped": dropped,
             "validation_ms": validation_ms,
+            "window_start": window_start,
+            "window_end": window_end,
         }
 
     def import_data_from_request(
@@ -522,6 +546,8 @@ class ImportService:
                 types=saved_counts["types"],
                 workouts_saved=saved_counts["workouts_saved"],
                 sleep_saved=saved_counts["sleep_saved"],
+                window_start=saved_counts["window_start"],
+                window_end=saved_counts["window_end"],
             )
 
         except ValidationError as e:
