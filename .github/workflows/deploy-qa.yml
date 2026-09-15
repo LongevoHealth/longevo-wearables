@@ -218,19 +218,22 @@ jobs:
             {"name": "STRAVA_CLIENT_ID", "value": "275259"},
             {"name": "STRAVA_DEFAULT_SCOPE", "value": "activity:read_all,profile:read_all"}
           ]'
-          # The sync.completed publisher rides along for the same reason. The topic
-          # is resolved rather than hardcoded, like the DB and secret lookups above,
-          # so a rename fails here instead of silently disabling emission.
+          # The sync.completed publisher rides along for the same reason.
           #
           # All three services that can finish an ingestion run need these: the SDK
           # path runs on celery-worker-bulk (CELERY_QUEUES=sdk_sync), provider
           # webhooks and polling on celery-worker, and the api can complete a run
           # synchronously. celery-beat only schedules, so it is left out.
-          sync_topic_arn=$(aws sns list-topics \
-            --query "Topics[?ends_with(TopicArn, \`:${CLUSTER}-sync-events.fifo\`)].TopicArn | [0]" \
-            --output text)
-          if [ -z "$sync_topic_arn" ] || [ "$sync_topic_arn" = "None" ]; then
-            echo "::error::could not resolve the sync-events topic for ${CLUSTER}"
+          #
+          # The ARN is built from the cluster name and then confirmed to exist, so a
+          # rename fails the deploy instead of registering an ARN that publishes
+          # nowhere. GetTopicAttributes and not ListTopics: it scopes to this single
+          # topic, while ListTopics is an account-wide enumeration whose IAM resource
+          # can only be "*". get-caller-identity needs no permission of its own.
+          account_id=$(aws sts get-caller-identity --query Account --output text)
+          sync_topic_arn="arn:aws:sns:${AWS_REGION}:${account_id}:${CLUSTER}-sync-events.fifo"
+          if ! aws sns get-topic-attributes --topic-arn "$sync_topic_arn" >/dev/null; then
+            echo "::error::sync-events topic ${sync_topic_arn} not found"
             exit 1
           fi
           sync_env=$(jq -nc --arg arn "$sync_topic_arn" '[
