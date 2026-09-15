@@ -66,6 +66,121 @@ class TestFilterByPriority:
 
 
 # ---------------------------------------------------------------------------
+# _collapse_activity_sources
+# ---------------------------------------------------------------------------
+
+
+def _activity(source: str, **metrics: Any) -> dict:
+    """Fila de agregado diario tal como la devuelve el repositorio.
+
+    Los campos ausentes toman el valor con que la query los rellena cuando la
+    fuente no escribió esa métrica: 0 para los sumables, None para el resto.
+    """
+    base = {
+        "activity_date": date(2026, 9, 15),
+        "provider": "apple",
+        "source": source,
+        "device_model": "iPhone17,2",
+        "device_type": "phone",
+        "steps_sum": 0,
+        "active_energy_sum": 0.0,
+        "basal_energy_sum": 0.0,
+        "hr_avg": None,
+        "hr_max": None,
+        "hr_min": None,
+        "distance_sum": None,
+        "flights_climbed_sum": None,
+        "active_time_minutes": None,
+    }
+    base.update(metrics)
+    return base
+
+
+class TestCollapseActivitySources:
+    """Un día con varias fuentes de HealthKit tiene que dar un día completo.
+
+    Caso real de QA: el 14/09 el iPhone empezó a grabar frecuencia cardíaca de
+    un accesorio BLE, que aparece como una fuente propia ("Dispositivo
+    Bluetooth") sin un solo paso. Las tres fuentes viven en el mismo teléfono,
+    así que empatan en provider y en tipo de dispositivo, y quedarse con una
+    sola devolvía el día en 0 pasos.
+    """
+
+    def test_merges_sources_that_tie_on_priority(self, db: Session, service: SummariesService) -> None:
+        entries = [
+            _activity("Dispositivo Bluetooth", hr_avg=72, hr_max=118, hr_min=54),
+            _activity("iPhone de Manuel", steps_sum=644, active_energy_sum=37.0),
+            _activity("Zepp", steps_sum=488, active_energy_sum=41.0, hr_avg=80, hr_max=131, hr_min=49),
+        ]
+
+        result = service._collapse_activity_sources(db, uuid4(), entries)
+
+        assert len(result) == 1
+        day = result[0]
+        # Máximo y no suma: el teléfono y el reloj cuentan los mismos pasos.
+        assert day["steps_sum"] == 644
+        assert day["active_energy_sum"] == 41.0
+        assert day["hr_max"] == 131
+        assert day["hr_min"] == 49
+
+    def test_a_source_without_steps_no_longer_zeroes_the_day(self, db: Session, service: SummariesService) -> None:
+        """La regresión exacta: la fila sin pasos ganaba el desempate."""
+        entries = [
+            _activity("Dispositivo Bluetooth", hr_avg=72),
+            _activity("iPhone de Manuel", steps_sum=644),
+        ]
+
+        result = service._collapse_activity_sources(db, uuid4(), entries)
+
+        assert result[0]["steps_sum"] == 644
+        assert result[0]["hr_avg"] == 72
+
+    def test_is_deterministic_regardless_of_row_order(self, db: Session, service: SummariesService) -> None:
+        """La query sólo ordena por fecha, así que el orden dentro del día no está definido."""
+        entries = [
+            _activity("Dispositivo Bluetooth", hr_avg=72),
+            _activity("iPhone de Manuel", steps_sum=644),
+            _activity("Zepp", steps_sum=488, hr_avg=80),
+        ]
+
+        forward = service._collapse_activity_sources(db, uuid4(), list(entries))
+        backward = service._collapse_activity_sources(db, uuid4(), list(reversed(entries)))
+
+        assert forward == backward
+
+    def test_does_not_mix_across_providers(self, db: Session, service: SummariesService) -> None:
+        """Fusionar es para fuentes del mismo dispositivo, no entre proveedores.
+
+        Garmin y Apple midiendo el mismo día son dos relatos del mismo cuerpo:
+        combinarlos mezclaría dos mediciones distintas. Ahí sigue ganando el de
+        mayor prioridad, como hasta ahora.
+        """
+        entries = [
+            _activity("Garmin", provider="garmin", device_model="fenix7", device_type="watch", steps_sum=9000),
+            _activity("iPhone de Manuel", steps_sum=644),
+        ]
+
+        result = service._collapse_activity_sources(db, uuid4(), entries)
+
+        assert len(result) == 1
+        assert result[0]["steps_sum"] in (9000, 644)
+        # El ganador conserva su identidad: no hereda métricas del otro proveedor.
+        winner = result[0]
+        assert (winner["steps_sum"] == 9000) == (winner["provider"] == "garmin")
+
+    def test_keeps_one_row_per_date(self, db: Session, service: SummariesService) -> None:
+        entries = [
+            _activity("iPhone de Manuel", steps_sum=644),
+            _activity("Zepp", steps_sum=488),
+            _activity("iPhone de Manuel", activity_date=date(2026, 9, 14), steps_sum=100),
+        ]
+
+        result = service._collapse_activity_sources(db, uuid4(), entries)
+
+        assert {r["activity_date"] for r in result} == {date(2026, 9, 14), date(2026, 9, 15)}
+
+
+# ---------------------------------------------------------------------------
 # _get_user_max_hr
 # ---------------------------------------------------------------------------
 
