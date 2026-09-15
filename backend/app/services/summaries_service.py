@@ -85,6 +85,22 @@ DEFAULT_AVERAGE_PERIOD_DAYS = 7
 DEFAULT_LATEST_WINDOW_HOURS = 4
 
 
+# Campos del agregado diario de actividad que se fusionan entre fuentes de un
+# mismo dispositivo. Máximo para los acumulables (sumarlos duplicaría lo que dos
+# sensores midieron del mismo cuerpo) y para el pico de FC; mínimo para el valle.
+_ACTIVITY_MAX_FIELDS = (
+    "steps_sum",
+    "active_energy_sum",
+    "basal_energy_sum",
+    "distance_sum",
+    "flights_climbed_sum",
+    "active_time_minutes",
+    "hr_max",
+)
+_ACTIVITY_MIN_FIELDS = ("hr_min",)
+_ACTIVITY_METRIC_FIELDS = (*_ACTIVITY_MAX_FIELDS, *_ACTIVITY_MIN_FIELDS, "hr_avg")
+
+
 class SummariesService:
     """Service for aggregating daily health summaries."""
 
@@ -132,29 +148,112 @@ class SummariesService:
                 filtered.append(entries[0])
                 continue
 
-            # Sort by priority
-            def sort_key(entry: dict) -> tuple[int, int, str]:
-                raw_provider = entry.get("provider") or entry.get("source")
-                try:
-                    provider = ProviderName(raw_provider)
-                except ValueError:
-                    provider = ProviderName.UNKNOWN
-
-                provider_priority = provider_order.get(provider, 99)
-
-                # Parse device type
-                device_model = entry.get("device_model")
-                device_type_priority = 99
-                if device_model:
-                    device_type = infer_device_type_from_model(device_model)
-                    device_type_priority = device_type_order.get(device_type, 99)
-
-                return (provider_priority, device_type_priority, device_model or "")
-
-            entries_sorted = sorted(entries, key=sort_key)
+            entries_sorted = sorted(
+                entries,
+                key=lambda e: (
+                    *self._priority_rank(e, provider_order, device_type_order),
+                    e.get("device_model") or "",
+                ),
+            )
             filtered.append(entries_sorted[0])
 
         return filtered
+
+    def _priority_rank(self, entry: dict, provider_order: dict, device_type_order: dict) -> tuple[int, int]:
+        """Prioridad de una fila: (proveedor, tipo de dispositivo). Menor gana."""
+        raw_provider = entry.get("provider") or entry.get("source")
+        try:
+            provider = ProviderName(raw_provider)
+        except ValueError:
+            provider = ProviderName.UNKNOWN
+
+        provider_priority = provider_order.get(provider, 99)
+
+        device_model = entry.get("device_model")
+        device_type_priority = 99
+        if device_model:
+            device_type = infer_device_type_from_model(device_model)
+            device_type_priority = device_type_order.get(device_type, 99)
+
+        return (provider_priority, device_type_priority)
+
+    def _collapse_activity_sources(
+        self,
+        db_session: DbSession,
+        user_id: UUID,
+        results: list[dict] | list,
+    ) -> list[dict] | list:
+        """Una fila por día, fusionando las fuentes que empatan en prioridad.
+
+        Un mismo teléfono expone varias fuentes de HealthKit a la vez —la app
+        del reloj, el propio iPhone, un accesorio BLE de pulso— y cada una es
+        una fila con su propio subconjunto de métricas. Las tres comparten
+        proveedor y tipo de dispositivo, así que empatan, y quedarse con una
+        sola descartaba las métricas de las otras: un accesorio que sólo manda
+        frecuencia cardíaca dejaba el día en cero pasos. Peor, la query sólo
+        ordena por fecha, así que cuál ganaba dependía de lo que devolviera la
+        base y podía cambiar entre corridas.
+
+        Se fusiona por **máximo** y no por suma: el teléfono en el bolsillo y el
+        reloj en la muñeca cuentan los mismos pasos, sumarlos los duplicaría.
+        Es la misma razón por la que Salud de iOS ordena sus fuentes por
+        prioridad en vez de acumularlas.
+
+        Entre proveedores distintos no se fusiona nada: Garmin y Apple midiendo
+        el mismo día son dos relatos del mismo cuerpo, y ahí sigue ganando el de
+        mayor prioridad.
+        """
+        if not results:
+            return results
+
+        provider_order = ProviderPriorityRepository(ProviderPriority).get_priority_order(db_session)
+        device_type_order = DeviceTypePriorityRepository().get_priority_order(db_session)
+
+        by_date: dict[date, list[dict]] = defaultdict(list)
+        for result in results:
+            by_date[result["activity_date"]].append(result)
+
+        collapsed = []
+        for _dt, entries in sorted(by_date.items()):
+            if len(entries) == 1:
+                collapsed.append(entries[0])
+                continue
+
+            best_rank = min(self._priority_rank(e, provider_order, device_type_order) for e in entries)
+            tied = [e for e in entries if self._priority_rank(e, provider_order, device_type_order) == best_rank]
+            collapsed.append(self._merge_activity_entries(tied))
+
+        return collapsed
+
+    @staticmethod
+    def _merge_activity_entries(entries: list[dict]) -> dict:
+        """Fusionar filas de actividad de un mismo día y una misma prioridad."""
+        if len(entries) == 1:
+            return entries[0]
+
+        # Representante: la fila con más métricas con dato, y a igualdad el
+        # nombre de fuente más chico. Determinista, y hace que la etiqueta de
+        # procedencia sea la del mayor aportante en vez de una al azar.
+        def richness(entry: dict) -> tuple[int, str]:
+            filled = sum(1 for key in _ACTIVITY_METRIC_FIELDS if entry.get(key))
+            return (-filled, str(entry.get("source") or ""))
+
+        merged = dict(sorted(entries, key=richness)[0])
+
+        for key in _ACTIVITY_MAX_FIELDS:
+            values = [e[key] for e in entries if e.get(key) is not None]
+            if values:
+                merged[key] = max(values)
+        for key in _ACTIVITY_MIN_FIELDS:
+            values = [e[key] for e in entries if e.get(key) is not None]
+            if values:
+                merged[key] = min(values)
+        # El promedio de FC no se puede recombinar sin los conteos por fuente,
+        # así que se conserva el del representante y sólo se rellena si no tiene.
+        if merged.get("hr_avg") is None:
+            merged["hr_avg"] = next((e["hr_avg"] for e in entries if e.get("hr_avg") is not None), None)
+
+        return merged
 
     def _get_user_max_hr(self, db_session: DbSession, user_id: UUID, reference_date: datetime) -> int:
         """Calculate user's max HR based on age.
@@ -480,8 +579,8 @@ class SummariesService:
         # Merge archived data when archival is enabled
         results = self._merge_archive_activity(db_session, user_id, start_date, end_date, results)
 
-        # Filter by priority to get best source per date
-        results = self._filter_by_priority(db_session, user_id, results, date_key="activity_date")
+        # Una fila por día, fusionando las fuentes que empatan en prioridad
+        results = self._collapse_activity_sources(db_session, user_id, results)
 
         # Get workout aggregates (elevation, distance, energy from workouts)
         workout_aggregates = self.event_record_repo.get_daily_workout_aggregates(
