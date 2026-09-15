@@ -4,6 +4,7 @@ Tests for sync_vendor_data Celery task.
 Tests synchronization of workout data from external providers (Garmin, Polar, Suunto).
 """
 
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from sqlalchemy.orm import Session
@@ -350,6 +351,96 @@ class TestSyncVendorDataTask:
         assert result["user_id"] == "not-a-valid-uuid"
         assert "user_id" in result["errors"]
         assert "Invalid UUID format" in result["errors"]["user_id"]
+
+
+class TestSyncCompletedNotificationMetadata:
+    """El evento terminal del pull tiene que ser consumible aguas abajo.
+
+    El consumidor de Longevo rechaza un `sync.completed` sin ventana y no
+    puleá nada si no vienen métricas ni actividades. Hasta ahora sólo el
+    camino del SDK de Apple poblaba esos campos, así que todo evento de
+    Whoop, Oura, Strava y Garmin se descartaba del otro lado.
+    """
+
+    @patch("app.integrations.celery.tasks.sync_vendor_data_task.completed")
+    @patch("app.integrations.celery.tasks.sync_vendor_data_task.SessionLocal")
+    @patch("app.services.providers.factory.ProviderFactory.get_provider")
+    def test_pull_declares_its_window_types_and_activities(
+        self,
+        mock_get_provider: MagicMock,
+        mock_session_local: MagicMock,
+        mock_completed: MagicMock,
+        db: Session,
+        mock_celery_app: MagicMock,
+    ) -> None:
+        user = UserFactory()
+        UserConnectionFactory(user=user, provider="whoop", status=ConnectionStatus.ACTIVE)
+
+        mock_session_local.return_value.__enter__.return_value = db
+        mock_session_local.return_value.__exit__.return_value = None
+
+        mock_strategy = MagicMock()
+        mock_strategy.capabilities.rest_pull = True
+        mock_strategy.capabilities.webhook_stream = False
+        mock_strategy.workouts.load_data.return_value = True
+        mock_strategy.data_247.load_and_save_all.return_value = {
+            "sleep_sessions_synced": 2,
+            "recovery_samples_synced": 5,
+            "body_measurement_samples_synced": 0,
+        }
+        mock_get_provider.return_value = mock_strategy
+
+        sync_vendor_data(
+            str(user.id),
+            start_date="2026-09-10T00:00:00+00:00",
+            end_date="2026-09-11T00:00:00+00:00",
+        )
+
+        metadata = mock_completed.call_args.kwargs["metadata"]
+
+        assert metadata["window_start"] == datetime(2026, 9, 10, tzinfo=timezone.utc)
+        assert metadata["window_end"] == datetime(2026, 9, 11, tzinfo=timezone.utc)
+        # Sólo los slugs que escribieron algo: body_measurement quedó en cero.
+        assert metadata["types"] == ["recovery"]
+        # `sleep` sale de la sub-sincronización 24/7 y `workout` de que la de
+        # workouts corrió — el pull no tiene un conteo de workouts.
+        assert metadata["activity_types"] == ["sleep", "workout"]
+
+    @patch("app.integrations.celery.tasks.sync_vendor_data_task.completed")
+    @patch("app.integrations.celery.tasks.sync_vendor_data_task.SessionLocal")
+    @patch("app.services.providers.factory.ProviderFactory.get_provider")
+    def test_pull_omits_the_window_when_nothing_ran(
+        self,
+        mock_get_provider: MagicMock,
+        mock_session_local: MagicMock,
+        mock_completed: MagicMock,
+        db: Session,
+        mock_celery_app: MagicMock,
+    ) -> None:
+        """Sin sub-sincronización no hay ventana que declarar.
+
+        Rechazar-no-reparar: el consumidor descarta un evento sin ventana, que
+        es lo correcto cuando no se tocó nada. Inventar un rango acá sería
+        exactamente la reparación que el diseño prohíbe.
+        """
+        user = UserFactory()
+        UserConnectionFactory(user=user, provider="oura", status=ConnectionStatus.ACTIVE)
+
+        mock_session_local.return_value.__enter__.return_value = db
+        mock_session_local.return_value.__exit__.return_value = None
+
+        mock_strategy = MagicMock()
+        mock_strategy.capabilities.rest_pull = True
+        mock_strategy.capabilities.webhook_stream = False
+        mock_strategy.workouts = None
+        mock_strategy.data_247 = None
+        mock_get_provider.return_value = mock_strategy
+
+        sync_vendor_data(str(user.id))
+
+        metadata = mock_completed.call_args.kwargs["metadata"]
+        assert "window_start" not in metadata
+        assert "window_end" not in metadata
 
 
 class TestBuildSyncParams:

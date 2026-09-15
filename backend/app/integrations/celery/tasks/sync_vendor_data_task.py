@@ -38,6 +38,61 @@ def _emit_sync_status(fn: Any, /, *args: Any, **kwargs: Any) -> None:
         )
 
 
+# Sufijos con que los proveedores nombran sus conteos de 24/7: Whoop devuelve
+# `sleep_sessions_synced`, otros un WriteCounts por slug. Se aceptan las dos
+# formas en vez de pedirle a cada proveedor que se normalice.
+_PULL_COUNT_SUFFIXES = ("_sessions_synced", "_samples_synced", "_synced")
+
+# Slug de 24/7 que el consumidor trata como actividad y no como métrica.
+_PULL_SLEEP_SLUG = "sleep"
+
+
+def _parse_window_bound(value: str | None) -> datetime | None:
+    """Fecha ISO de los parámetros de sync a datetime, o None si no se puede."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _widen_pull_window(
+    current_start: datetime | None,
+    current_end: datetime | None,
+    start: datetime | None,
+    end: datetime | None,
+) -> tuple[datetime | None, datetime | None]:
+    """Unión de la ventana acumulada con la de una sub-sincronización.
+
+    Las sub-sincronizaciones de una misma corrida pueden pedir rangos
+    distintos; el evento declara el que las cubre a todas.
+    """
+    if start and (current_start is None or start < current_start):
+        current_start = start
+    if end and (current_end is None or end > current_end):
+        current_end = end
+    return current_start, current_end
+
+
+def _written_slugs(results: Any) -> set[str]:
+    """Slugs de 24/7 que efectivamente escribieron algo en esta corrida."""
+    slugs: set[str] = set()
+    if not isinstance(results, dict):
+        return slugs
+    for key, value in results.items():
+        written = value if isinstance(value, int) else getattr(value, "inserted", 0) + getattr(value, "updated", 0)
+        if not written:
+            continue
+        slug = str(key)
+        for suffix in _PULL_COUNT_SUFFIXES:
+            if slug.endswith(suffix):
+                slug = slug[: -len(suffix)]
+                break
+        slugs.add(slug)
+    return slugs
+
+
 def _include_in_periodic_pull(caps: Any, live_sync_mode: LiveSyncMode | None, is_historical: bool) -> bool:
     """True if the provider should be included in this REST pull run.
 
@@ -259,6 +314,19 @@ def sync_vendor_data(
                     # count always equals "X new, Y updated".
                     pull_inserted = 0
                     pull_updated = 0
+                    # Ventana, métricas y actividades para el `sync.completed`.
+                    # Describen lo que esta corrida le PIDIÓ al proveedor, no
+                    # un min/max por registro como hace el SDK de Apple: el
+                    # pull no lo tiene. Es un dato real —el rango consultado—,
+                    # no una ventana inventada, que es lo que prohíbe
+                    # rechazar-no-reparar. Y declarar de más es el lado
+                    # seguro: el consumidor re-puleá de Open Wearables, que es
+                    # la fuente de verdad de esa ventana, y el
+                    # snapshot-replace de sueño exige cubrirla entera.
+                    pull_window_start: datetime | None = None
+                    pull_window_end: datetime | None = None
+                    pull_metric_slugs: set[str] = set()
+                    pull_activity_types: set[str] = set()
                     applied_lookback: timedelta | None = None  # set when the lookback actually widened the window
 
                     # Resolve effective start: explicit arg > last_synced_at > now
@@ -298,6 +366,19 @@ def sync_vendor_data(
                         try:
                             success = strategy.workouts.load_data(db, user_uuid, **params)
                             provider_result.params["workouts"] = {"success": success, **params}
+                            if success:
+                                # `load_data` devuelve un booleano, no un conteo, así
+                                # que la actividad se declara por haber corrido. El
+                                # costo de declarar de más es un pull extra del lado
+                                # del consumidor; el de declarar de menos es que los
+                                # workouts del usuario no lleguen nunca.
+                                pull_activity_types.add("workout")
+                                pull_window_start, pull_window_end = _widen_pull_window(
+                                    pull_window_start,
+                                    pull_window_end,
+                                    _parse_window_bound(effective_start),
+                                    _parse_window_bound(end_date) or datetime.now(timezone.utc),
+                                )
                         except Exception as e:
                             log_structured(
                                 logger,
@@ -358,6 +439,14 @@ def sync_vendor_data(
                                 for _count in results_247.values():
                                     pull_inserted += getattr(_count, "inserted", 0)
                                     pull_updated += getattr(_count, "updated", 0)
+                                written = _written_slugs(results_247)
+                                if written:
+                                    if _PULL_SLEEP_SLUG in written:
+                                        pull_activity_types.add(_PULL_SLEEP_SLUG)
+                                    pull_metric_slugs |= written - {_PULL_SLEEP_SLUG}
+                                    pull_window_start, pull_window_end = _widen_pull_window(
+                                        pull_window_start, pull_window_end, start_dt, end_dt
+                                    )
                             else:
                                 results_247 = strategy.data_247.load_all_247_data(
                                     db,
@@ -476,6 +565,16 @@ def sync_vendor_data(
                             "is_historical": is_historical,
                             "params": provider_result.params,
                         }
+                        # Lo que el consumidor necesita para poder usar el evento.
+                        # Sin ventana lo descarta —y con razón: si no corrió
+                        # ninguna sub-sincronización no hay nada que ir a buscar.
+                        if pull_window_start and pull_window_end:
+                            completed_metadata["window_start"] = pull_window_start
+                            completed_metadata["window_end"] = pull_window_end
+                        if pull_metric_slugs:
+                            completed_metadata["types"] = sorted(pull_metric_slugs)
+                        if pull_activity_types:
+                            completed_metadata["activity_types"] = sorted(pull_activity_types)
                         completed_message = (
                             f"Sync from {provider_name} completed"
                             if not any_failed

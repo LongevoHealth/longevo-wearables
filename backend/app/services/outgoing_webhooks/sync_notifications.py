@@ -55,7 +55,18 @@ def _iso(value: Any) -> str | None:
 def build_payload(event: SyncStatusEvent, external_user_id: str | None) -> dict[str, Any]:
     """Construir el evento `sync.completed` v1 a partir de un evento terminal."""
     metadata = event.metadata or {}
-    activity_types = sorted(marker for key, marker in _ACTIVITY_FROM_COUNT.items() if int(metadata.get(key) or 0) > 0)
+    # El SDK cuenta lo que escribió, así que sus actividades se derivan de los
+    # conteos. El pull de proveedores no: cada proveedor devuelve una forma
+    # distinta y no hay un conteo comparable, pero sí sabe qué
+    # sub-sincronizaciones corrió, y las declara. La alternativa sería
+    # inventar un `sleep_saved: 1` para que el consumidor puleé sueño —
+    # mentir en un conteo para conseguir un efecto.
+    declared = metadata.get("activity_types")
+    activity_types = (
+        sorted(str(marker) for marker in declared)
+        if declared
+        else sorted(marker for key, marker in _ACTIVITY_FROM_COUNT.items() if int(metadata.get(key) or 0) > 0)
+    )
     return {
         "event_type": "sync.completed",
         "schema_version": SCHEMA_VERSION,
