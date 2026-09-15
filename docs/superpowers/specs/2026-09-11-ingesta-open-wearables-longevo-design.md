@@ -153,7 +153,17 @@ Dos credenciales, ninguna compartida.
 
 **Restricción de escritura.** El modelo `ApiKey` del fork no tiene scopes: tiene `id`, `name` y `created_by`. Y `ApiKeyDep` protege también endpoints que mutan — `create_user`, alta y baja de conexiones, `sync_data`, `import_xml`. Una key es hoy, de hecho, una credencial de escritura.
 
-En fase 1 esto se cierra **en el borde y sin código**: regla de WAF que bloquea todo lo que no sea `GET` sobre `/api/v1/users/*/summaries/*`, `/api/v1/users/*/events/*` y `/api/v1/users/*/timeseries`, dejando pasar los paths de ingesta del SDK y el de SNS. Es válido porque en fase 1 Longevo es el único consumidor de la External API. Se define en Terraform junto al resto del WAF y queda documentado ahí.
+En fase 1 esto se cierra **en el borde y sin código**, pero **no con una regla de sólo-lectura**. Esa fue la primera versión de este diseño y era inaplicable: Longevo escribe legítimamente contra la External API — `POST /api/v1/users` y `POST /api/v1/users/{id}/token` ocurren en `createSession`, o sea en la primera llamada de la integración; `PATCH /api/v1/users/{id}` actualiza el perfil; y `DELETE /api/v1/users/{id}/connections/{provider}` desvincula un provider desde la app. Una regla de sólo-GET habría roto las cuatro.
+
+El control correcto no es "sólo lectura" sino **"nada destructivo"**, que además es la traducción literal del requisito. La regla bloquea las operaciones que Longevo nunca ejecuta y cuyo daño es irreversible:
+
+| Bloqueado | Permitido |
+|---|---|
+| `DELETE /api/v1/users/{id}` — borra el usuario entero | `DELETE /api/v1/users/{id}/connections/{provider}` — desvincular, que la app sí hace |
+| `DELETE /api/v1/users/{id}/connections/{provider}/data` — borra los datos de un provider | `POST /api/v1/users`, `PATCH /api/v1/users/{id}`, `POST /api/v1/users/{id}/token` |
+| `DELETE /api/v1/users/{id}/events/...` — borra registros individuales | `POST /api/v1/users/{id}/import/apple/xml/*` — ingesta real |
+
+Se define en Terraform junto al resto del WAF y queda documentado ahí.
 
 **Fase 2, cuando aparezca un segundo consumidor:** un booleano `read_only` en `ApiKey`, su migración aditiva, y un chequeo dentro de `_require_api_key` que rechace todo lo que no sea `GET` cuando la key es de lectura. `_require_api_key` es un único punto de paso con acceso al request, así que **no hay que anotar ningún endpoint**: un archivo de divergencia contra upstream, no doce.
 
