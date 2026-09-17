@@ -547,7 +547,7 @@ class GoogleHealth247Data(Base247DataTemplate):
             # or bucketed /timeseries reads would drop the daily rows as "totals" (see daily_total_flag).
             is_daily_total=daily_total_flag(series_type, is_daily_total),
             external_id=(
-                f"{series_type.value}:{recorded_at.isoformat()}" if series_type is SeriesType.energy else None
+                f"{series_type.value}:{recorded_at.isoformat()}" if series_type is SeriesType.active_energy else None
             ),
         )
 

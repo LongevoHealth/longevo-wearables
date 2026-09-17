@@ -29,7 +29,7 @@ ACTIVITY_METRICS: tuple[DataTypeMetric, ...] = (
     ),
     DataTypeMetric(
         "active-energy-burned",
-        SeriesType.energy,
+        SeriesType.active_energy,
         value_key="activeEnergyBurned",
         list_spec=ListSpec("kcal", TimeShape.INTERVAL),
     ),

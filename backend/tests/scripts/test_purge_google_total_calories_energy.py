@@ -24,7 +24,7 @@ from app.schemas.enums.provider import ProviderName
 from app.schemas.enums.series_types import get_series_type_id
 from tests.factories import DataPointSeriesFactory, DataSourceFactory
 
-ENERGY_ID = get_series_type_id(SeriesType.energy)
+ENERGY_ID = get_series_type_id(SeriesType.active_energy)
 BASAL_ID = get_series_type_id(SeriesType.basal_energy)
 T0 = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
 
@@ -177,6 +177,26 @@ def test_idempotent_second_run_is_noop(db: Session) -> None:
     second = purge(db, dry_run=False)
 
     assert second == {"series_deleted": 0, "archive_deleted": 0}
+
+
+def test_finds_the_series_when_the_stored_name_is_still_the_retired_one(db: Session) -> None:
+    """The purge may run before the active_energy rename reaches the database.
+
+    Resolving the series by name would come up empty there and report "nothing to purge",
+    which reads as "no data" rather than "lookup failed". The id is what rows reference.
+    """
+    definition = db.get(SeriesTypeDefinition, ENERGY_ID)
+    assert definition is not None
+    definition.code = "energy"
+    db.flush()
+
+    source = _health_api_source()
+    _point(db, source, type_id=ENERGY_ID, offset_hours=0)
+
+    result = purge(db, dry_run=False)
+
+    assert result["series_deleted"] == 1
+    assert _live_rows(db, source) == []
 
 
 def test_no_health_api_sources_is_noop(db: Session) -> None:
