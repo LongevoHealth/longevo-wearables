@@ -3,7 +3,7 @@ from datetime import datetime, time, timedelta
 from uuid import UUID
 
 from psycopg.errors import UniqueViolation
-from sqlalchemy import ColumnElement, Date, Interval, String, and_, asc, case, cast, func, literal_column, text, tuple_
+from sqlalchemy import ColumnElement, Date, String, and_, asc, case, cast, func, literal_column, text, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError as SQLAIntegrityError
 
@@ -29,6 +29,7 @@ from app.schemas.responses.activity import (
     IntensityMinutesResult,
 )
 from app.utils.exceptions import handle_exceptions
+from app.utils.local_date import local_date_expr, user_timezone_offset
 from app.utils.pagination import decode_cursor
 
 # Identity tuple: (user_id, device_model, source)
@@ -523,9 +524,8 @@ class DataPointSeriesRepository(
         flights_id = get_series_type_id(SeriesType.flights_climbed)
         active_time_id = get_series_type_id(SeriesType.active_time)
 
-        local_date = cast(
-            self.model.recorded_at + cast(func.coalesce(self.model.zone_offset, "+00:00"), Interval),
-            Date,
+        local_date = local_date_expr(
+            self.model.recorded_at, self.model.zone_offset, user_timezone_offset(db_session, user_id)
         )
 
         def prefer_daily_sum(series_id: int) -> ColumnElement:
@@ -657,9 +657,8 @@ class DataPointSeriesRepository(
         """
         steps_id = get_series_type_id(SeriesType.steps)
 
-        local_date = cast(
-            self.model.recorded_at + cast(func.coalesce(self.model.zone_offset, "+00:00"), Interval),
-            Date,
+        local_date = local_date_expr(
+            self.model.recorded_at, self.model.zone_offset, user_timezone_offset(db_session, user_id)
         )
 
         # Create minute bucket expression using literal 'minute' text
@@ -760,9 +759,8 @@ class DataPointSeriesRepository(
         """
         hr_id = get_series_type_id(SeriesType.heart_rate)
 
-        local_date = cast(
-            self.model.recorded_at + cast(func.coalesce(self.model.zone_offset, "+00:00"), Interval),
-            Date,
+        local_date = local_date_expr(
+            self.model.recorded_at, self.model.zone_offset, user_timezone_offset(db_session, user_id)
         )
 
         # Create minute bucket expression

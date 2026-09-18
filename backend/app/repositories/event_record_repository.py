@@ -6,7 +6,6 @@ from sqlalchemy import UUID as SQL_UUID
 from sqlalchemy import (
     Date,
     Integer,
-    Interval,
     String,
     and_,
     asc,
@@ -36,6 +35,7 @@ from app.schemas.model_crud.activities import (
     EventRecordUpdate,
 )
 from app.utils.exceptions import handle_exceptions
+from app.utils.local_date import local_date_expr, user_timezone_offset
 from app.utils.pagination import decode_cursor
 
 # Identity tuple: (user_id, device_model, source)
@@ -397,9 +397,8 @@ class EventRecordRepository(
         Returned as an unexecuted Query so callers can inline it as `id IN (...)`
         and keep dedup + pagination in a single SQL statement.
         """
-        local_sleep_date = cast(
-            EventRecord.end_datetime + cast(func.coalesce(EventRecord.zone_offset, "+00:00"), Interval),
-            Date,
+        local_sleep_date = local_date_expr(
+            EventRecord.end_datetime, EventRecord.zone_offset, user_timezone_offset(db_session, user_id)
         )
         provider_rank = (
             case(*[(DataSource.provider == p, r) for p, r in provider_order.items()], else_=99)
@@ -568,9 +567,8 @@ class EventRecordRepository(
         # Local calendar date the session ended (wake-up date) — mirrors score
         # date logic in fill_missing_sleep_scores_task so chart, score, and
         # session list all key on the same date.
-        local_sleep_date = cast(
-            EventRecord.end_datetime + cast(func.coalesce(EventRecord.zone_offset, "+00:00"), Interval),
-            Date,
+        local_sleep_date = local_date_expr(
+            EventRecord.end_datetime, EventRecord.zone_offset, user_timezone_offset(db_session, user_id)
         )
 
         # Build base aggregated query as subquery
@@ -806,9 +804,8 @@ class EventRecordRepository(
         net sleep time (SleepDetails.sleep_total_duration_minutes) and falls back to wall-clock
         duration, matching the aggregate duration logic. Sessions are sorted by start time.
         """
-        local_sleep_date = cast(
-            EventRecord.end_datetime + cast(func.coalesce(EventRecord.zone_offset, "+00:00"), Interval),
-            Date,
+        local_sleep_date = local_date_expr(
+            EventRecord.end_datetime, EventRecord.zone_offset, user_timezone_offset(db_session, user_id)
         )
         is_nap_expr = func.coalesce(SleepDetails.is_nap, False)
         duration_seconds = case(
@@ -874,9 +871,8 @@ class EventRecordRepository(
         - workout_date, source, device_model
         - elevation_meters, distance_meters, energy_burned_kcal
         """
-        local_workout_date = cast(
-            self.model.end_datetime + cast(func.coalesce(self.model.zone_offset, "+00:00"), Interval),
-            Date,
+        local_workout_date = local_date_expr(
+            self.model.end_datetime, self.model.zone_offset, user_timezone_offset(db_session, user_id)
         )
 
         results = (
