@@ -732,6 +732,61 @@ class TestDataPointSeriesRepository:
             is_daily_total=is_daily_total,
         )
 
+    def test_aggregate_buckets_by_user_timezone_when_sample_has_none(
+        self, db: Session, series_repo: DataPointSeriesRepository
+    ) -> None:
+        """Muestra sin zona + usuario en UTC-3: 01:00Z del 16 es todavía el 15 para él.
+
+        Es el caso real: el SDK de Apple no manda `zone_offset`, así que sin
+        el fallback del usuario todo se agrupa por día UTC y los pasos de la
+        noche caen en el día siguiente.
+        """
+        user = UserFactory(timezone_offset="-03:00")
+        at = datetime(2026, 9, 16, 1, 0, tzinfo=timezone.utc)
+        sample = self._steps(user.id, "apple", "iPhone17,2", at, 500, False)
+        sample.zone_offset = None
+        series_repo.bulk_create(db, [sample])
+        db.commit()
+
+        result = series_repo.get_daily_activity_aggregates(
+            db, user.id, datetime(2026, 9, 15, tzinfo=timezone.utc), datetime(2026, 9, 17, tzinfo=timezone.utc)
+        )
+
+        assert [(r["activity_date"].isoformat(), r["steps_sum"]) for r in result] == [("2026-09-15", 500)]
+
+    def test_aggregate_prefers_the_samples_own_offset_over_the_users(
+        self, db: Session, series_repo: DataPointSeriesRepository
+    ) -> None:
+        """Si la muestra trae zona, gana la muestra: el usuario es sólo el fallback."""
+        user = UserFactory(timezone_offset="-03:00")
+        sample = self._steps(user.id, "garmin", "fenix", datetime(2026, 9, 16, 23, 0, tzinfo=timezone.utc), 700, False)
+        sample.zone_offset = "+02:00"  # para el reloj ya es el 17
+        series_repo.bulk_create(db, [sample])
+        db.commit()
+
+        result = series_repo.get_daily_activity_aggregates(
+            db, user.id, datetime(2026, 9, 15, tzinfo=timezone.utc), datetime(2026, 9, 18, tzinfo=timezone.utc)
+        )
+
+        assert [r["activity_date"].isoformat() for r in result] == ["2026-09-17"]
+
+    def test_aggregate_falls_back_to_utc_without_any_offset(
+        self, db: Session, series_repo: DataPointSeriesRepository
+    ) -> None:
+        """Sin zona en la muestra ni en el usuario, se agrupa por UTC como hasta ahora."""
+        user = UserFactory(timezone_offset=None)
+        at = datetime(2026, 9, 16, 1, 0, tzinfo=timezone.utc)
+        sample = self._steps(user.id, "apple", "iPhone17,2", at, 500, False)
+        sample.zone_offset = None
+        series_repo.bulk_create(db, [sample])
+        db.commit()
+
+        result = series_repo.get_daily_activity_aggregates(
+            db, user.id, datetime(2026, 9, 15, tzinfo=timezone.utc), datetime(2026, 9, 17, tzinfo=timezone.utc)
+        )
+
+        assert [r["activity_date"].isoformat() for r in result] == ["2026-09-16"]
+
     def test_aggregate_prefers_daily_total_over_intraday(
         self, db: Session, series_repo: DataPointSeriesRepository
     ) -> None:

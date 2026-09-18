@@ -4,6 +4,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from app.utils.dates import ZoneOffset
+
 # Allowlist for user sort columns - keep in sync with Literal type below
 USER_SORT_COLUMNS: frozenset[str] = frozenset({"created_at", "email", "first_name", "last_name", "last_synced_at"})
 
@@ -59,6 +61,10 @@ class UserRead(BaseModel):
     last_name: str | None = None
     email: EmailStr | None = None
     external_user_id: str | None = Field(None, description=_EXTERNAL_USER_ID_DEPRECATION, deprecated=True)
+    timezone_offset: ZoneOffset = Field(
+        None,
+        description="Zona horaria del usuario (`+HH:MM`). Fallback para muestras que llegan sin `zone_offset`.",
+    )
     last_synced_at: datetime | None = None
     last_synced_provider: str | None = None
     has_active_connection: bool = False
@@ -69,6 +75,10 @@ class UserCreate(BaseModel):
     last_name: str | None = Field(None, max_length=100)
     email: EmailStr | None = None
     external_user_id: str | None = Field(None, description=_EXTERNAL_USER_ID_DEPRECATION, deprecated=True)
+    timezone_offset: ZoneOffset = Field(
+        None,
+        description="Zona horaria del usuario (`+HH:MM`). Fallback para muestras que llegan sin `zone_offset`.",
+    )
 
 
 class UserCreateInternal(UserCreate):
@@ -81,6 +91,10 @@ class UserUpdate(BaseModel):
     last_name: str | None = Field(None, max_length=100)
     email: EmailStr | None = None
     external_user_id: str | None = Field(None, description=_EXTERNAL_USER_ID_DEPRECATION, deprecated=True)
+    timezone_offset: ZoneOffset = Field(
+        None,
+        description="Zona horaria del usuario (`+HH:MM`). Fallback para muestras que llegan sin `zone_offset`.",
+    )
 
 
 class UserUpdateInternal(UserUpdate):

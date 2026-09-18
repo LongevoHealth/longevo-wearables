@@ -229,6 +229,35 @@ class TestGetSleepSummaries:
             zone_offset="+00:00",
         )
 
+    def test_sleep_date_uses_the_users_timezone_when_the_record_has_none(
+        self, db: Session, service: SummariesService
+    ) -> None:
+        """Una noche que termina 02:00Z es la noche del día anterior en UTC-3.
+
+        La fecha de sueño se toma del fin de la sesión. Sin zona en el registro
+        el fork asumía UTC, y para un usuario en UTC-3 una noche que termina a
+        las 02:00Z (23:00 locales del día anterior) caía en el día equivocado.
+        """
+        user = UserFactory(timezone_offset="-03:00")
+        ds = DataSourceFactory(user=user, provider="apple")
+        record = EventRecordFactory(
+            data_source=ds,
+            category="sleep",
+            type="sleep",
+            start_datetime=_dt("2026-01-01T18:00:00+00:00"),
+            end_datetime=_dt("2026-01-02T02:00:00+00:00"),
+            duration_seconds=8 * 3600,
+            zone_offset=None,
+        )
+        SleepDetailsFactory(event_record=record)
+
+        result = service.get_sleep_summaries(
+            db, user.id, _dt("2025-12-31T00:00:00+00:00"), _dt("2026-01-04T00:00:00+00:00"), cursor=None, limit=10
+        )
+
+        # 02:00Z del 2 son las 23:00 del 1 en UTC-3: el sueño es del día 1.
+        assert [item.date.isoformat() for item in result.data] == ["2026-01-01"]
+
     def test_returns_empty_when_no_data(self, db: Session, service: SummariesService) -> None:
         user = UserFactory()
         result = service.get_sleep_summaries(

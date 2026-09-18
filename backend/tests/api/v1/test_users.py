@@ -306,6 +306,37 @@ class TestUpdateUser:
         db.refresh(user)
         assert user.email == "new@example.com"
 
+    def test_update_user_timezone_offset(self, client: TestClient, db: Session, api_v1_prefix: str) -> None:
+        """La zona del usuario es la red de seguridad para muestras sin `zone_offset`.
+
+        El SDK nativo de HealthKit sube todas las muestras sin zona, así que
+        sin este dato el fork agrupa por día UTC y a un usuario en UTC-3 le
+        corre el día tres horas.
+        """
+        developer = DeveloperFactory(email="test@example.com", password="test123")
+        user = UserFactory()
+        headers = developer_auth_headers(developer.id)
+
+        response = client.patch(f"{api_v1_prefix}/users/{user.id}", json={"timezone_offset": "-03:00"}, headers=headers)
+
+        assert response.status_code == 200
+        assert response.json()["timezone_offset"] == "-03:00"
+        db.refresh(user)
+        assert user.timezone_offset == "-03:00"
+
+    def test_update_user_rejects_malformed_timezone_offset(
+        self, client: TestClient, db: Session, api_v1_prefix: str
+    ) -> None:
+        """Mismo formato que el `zone_offset` de las muestras: `+HH:MM`, nada más."""
+        developer = DeveloperFactory(email="test@example.com", password="test123")
+        user = UserFactory()
+        headers = developer_auth_headers(developer.id)
+
+        response = client.patch(f"{api_v1_prefix}/users/{user.id}", json={"timezone_offset": "-3"}, headers=headers)
+
+        # El fork responde 400 a los errores de validación, no 422.
+        assert response.status_code == 400
+
     def test_update_user_name(self, client: TestClient, db: Session, api_v1_prefix: str) -> None:
         """Test updating user name."""
         # Arrange
